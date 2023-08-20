@@ -16,6 +16,11 @@ AI model Content Disarm and Reconstruction
 
 ## Usage/Examples
 
+Download the needed libraries using the requirements.txt
+
+requirements.txt genetrated using pipreqs
+
+
 **Initialize**- 
 
 If you wish to attack the model BITS_TO_USE_FOR_ATTACKING are the the bits amount used, if you do not wish to attack the model the value does not matter
