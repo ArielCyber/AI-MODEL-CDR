@@ -98,3 +98,7 @@ my_model.model
 
 ```
 and test it in any other whey you test you PyTorch models, the model is a normal PyTorch model
+
+
+
+## The experiment
