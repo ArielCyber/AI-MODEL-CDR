@@ -102,3 +102,15 @@ and test it in any other whey you test you PyTorch models, the model is a normal
 
 
 ## The experiment
+
+
+We wanted to test the effect of the CDR and the attack on models, we choosed thoose model to test on ResNet101, Vgg19, Vgg16, Inception, ResNet50, ResNet18, Mobilenet.
+
+We tested the models accurasy with the pythorch pre-trained weights on the imagenet valdition dataset from kaggle (link in the start).
+
+Then we tested the CDR effect on the models we used 23, 10 , 5 , 1 as the values for the random weights disarm, and also we tested the quanti8 option, we dissarmed the model then tested the model.
+
+Than we cheacked the effect of attacking the models with 2 kind of files a ransomware as a big file and vs-basic file as small file for every kind of file we attacked using 23, 12, 4 bits, we attacked the model then tested the model.
+
+The last type of test was attacking the model and then disarm it, we used the small file with 4 bits as the 1st attack scenario and the big file with 12 and 23 bits as the 2nd and 3rd scenarios, we attacked each model and then used every kind of disarm(23,10,5,1,quanti8) and tested the model accurasy.
+
