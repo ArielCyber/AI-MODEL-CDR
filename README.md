@@ -10,6 +10,9 @@ AI model Content Disarm and Reconstruction Submitted to IEEE Transactions on Inf
  
  - [Models were tested using the valdition dataset from imagenet dataset](https://www.kaggle.com/competitions/imagenet-object-localization-challenge/data) 
  - [Tested with PyTorch TorchVision models](https://pytorch.org/vision/0.8/models.html)
+
+ - This work was supported by the Ariel Cyber Innovation Center in conjunction with the Israel National Cyber Directorate in the Prime Minister's Office. This work is under US Provisional Patent Application No. 63/524,681. We thank Ofek Alon for his feedback and for running part of the simulations.
+ - License: Research only for non commercial use. the work is patent-pending with GNU General Public License (GPL) 
  
 
 
