@@ -8,11 +8,11 @@ AI model Content Disarm and Reconstruction Submitted to IEEE Transactions on Inf
 
  - [Based on @gaborvecsei Github repository](https://github.com/gaborvecsei/Neural-Network-Steganography)
  
- - [Models were tested using the valdition dataset from imagenet dataset](https://www.kaggle.com/competitions/imagenet-object-localization-challenge/data) 
+ - [Models were tested using the validation dataset from imagenet dataset](https://www.kaggle.com/competitions/imagenet-object-localization-challenge/data) 
  - [Tested with PyTorch TorchVision models](https://pytorch.org/vision/0.8/models.html)
 
  - This work was supported by the Ariel Cyber Innovation Center in conjunction with the Israel National Cyber Directorate in the Prime Minister's Office. This work is under US Provisional Patent Application No. 63/524,681. We thank Ofek Alon for his feedback and for running part of the simulations.
- - License: Research only for non commercial use. the work is patent-pending with GNU General Public License (GPL) 
+ - License: Research only for non-commercial use. the work is patent-pending with GNU General Public License (GPL).
  
 
 
@@ -21,7 +21,7 @@ AI model Content Disarm and Reconstruction Submitted to IEEE Transactions on Inf
 
 Download the needed libraries using the requirements.txt
 
-requirements.txt genetrated using pipreqs
+requirements.txt generated using pipreqs
 
 
 **Initialize**- 
@@ -38,7 +38,7 @@ json_location = '/your/data/place/class_index.json')
 ```
 **Loading a model** -
 
-You can use some of PyTorch built in models with pretriand weights 
+You can use some of PyTorch built-in models with pretriand weights 
 
 ResNet101, Vgg19, Vgg16, Inception, ResNet50, ResNet18, Mobilenet
 ```python
@@ -47,14 +47,14 @@ my_model.load_model(MODEL_TO_USE)
 ```
 OR
 
-You can use a model serialized using pickle
+You can use a model serialized using pickle.
 ```python
 my_model.load_model('/your/data/place/pickeled_model.bin')
 ```
 
 **Inserting data (Attacking)**-
 
-Sometimes padding will be needed , if you get this error ValueError: Fraction should be 23 values bits you will need to add padding, happens when data length cannot be divided by BITS_TO_USE_FOR_ATTACKING, the data length of the file is printed when using the insert file function
+Sometimes padding will be needed, if you get this error ValueError: Fraction should be 23 values bits, you will need to add padding, which happens when data length cannot be divided by BITS_TO_USE_FOR_ATTACKING, the data length of the file is printed when using the insert file function
 
 Insert a string 
 ```python
