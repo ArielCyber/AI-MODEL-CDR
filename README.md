@@ -1,7 +1,7 @@
 # AI-MODEL-CDR By Dr. Ran Dubin
 
 
-AI model Content Disarm and Reconstruction Submitted to IEEE Transactions on Information Forensics and Security
+AI model Content Disarm and Reconstruction Submitted to Elsevier Computers & Security.
 
 
 ## Acknowledgements
